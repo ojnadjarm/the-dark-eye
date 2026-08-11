@@ -48,6 +48,10 @@ const PALETTE = [
   "#b04dff", "#4dd9ff", "#ff9a4d", "#ffe14d", "#ff4d88",
   "#ff4dd9", "#4d6bff", "#ff6b4d", "#9db4ff", "#ffb84d",
 ];
+// Kokoro speakers a session gets if it doesn't pick one — his ear-tested male
+// set; sid 17 is the Eye's own voice and belongs to deep/DarkSaddler alone
+const VOICE_POOL = [11, 12, 13, 14, 15, 16, 18, 19];
+const EYE_SID = 17;
 function hueOfHex(hex) {
   const [r, g2, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
   const mx = Math.max(r, g2, b), mn = Math.min(r, g2, b), d = mx - mn;
@@ -63,7 +67,7 @@ const GREEN_HUE = 152; // the Eye's identity — sessions may not wear it
 const hub = {
   buses: new Map(),
   meta: new Map(), // name → { lastSeen, brief } — updated on every listen call
-  reg: new Map([["deep", { color: "#b04dff" }], ["fast", { color: "#4dd9ff" }]]),
+  reg: new Map([["deep", { color: "#b04dff", sid: EYE_SID }], ["fast", { color: "#4dd9ff", sid: 11 }]]),
   active: "deep",
   bus(name) {
     if (!this.buses.has(name)) this.buses.set(name, makeBus());
@@ -72,8 +76,8 @@ const hub = {
   names() {
     return [...new Set([...this.reg.keys(), ...this.buses.keys()])];
   },
-  // any session may join: unique name, unique non-green color
-  register(name, color) {
+  // any session may join: unique name, unique non-green color, unique voice
+  register(name, color, voice) {
     const clean = String(name ?? "").toLowerCase().trim().replace(/[^a-z0-9-]/g, "").slice(0, 16);
     if (!clean) return { error: "invalid name — use letters, digits, dashes" };
     // a name that is live right now belongs to someone — two pollers on one
@@ -108,14 +112,33 @@ const hub = {
       };
       chosen = "#" + [f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, "0")).join("");
     }
-    this.reg.set(clean, { color: chosen });
-    return { name: clean, color: chosen, ...(colorNote ? { note: colorNote } : {}) };
+    // voice: explicit pick honored if free and not the Eye's; else kept from a
+    // previous registration; else next free from the ear-tested pool
+    const usedSid = new Set(
+      [...this.reg.entries()].filter(([n]) => n !== clean).map(([, r]) => r.sid).filter((s) => s != null)
+    );
+    let sid = null;
+    let voiceNote;
+    if (voice != null) {
+      const want = Number(voice);
+      if (!Number.isInteger(want) || want < 0 || want > 52) voiceNote = "voice must be a sid 0-52, auto-assigned";
+      else if (want === EYE_SID && clean !== "deep") voiceNote = "voice 17 belongs to the Eye, auto-assigned";
+      else if (usedSid.has(want)) voiceNote = "voice already taken, auto-assigned";
+      else sid = want;
+    }
+    if (sid == null) sid = existing?.sid != null && !usedSid.has(existing.sid) ? existing.sid : null;
+    if (sid == null) sid = VOICE_POOL.find((s) => !usedSid.has(s)) ?? null;
+    if (sid == null) for (let s = 0; s < 53 && sid == null; s++) if (s !== EYE_SID && !usedSid.has(s)) sid = s;
+    this.reg.set(clean, { color: chosen, sid: sid ?? EYE_SID });
+    const note = [colorNote, voiceNote].filter(Boolean).join("; ");
+    return { name: clean, color: chosen, voice: sid ?? EYE_SID, ...(note ? { note } : {}) };
   },
   roster() {
     const now = Date.now();
     return this.names().map((name) => ({
       name,
       color: this.reg.get(name)?.color ?? null,
+      voice: this.reg.get(name)?.sid ?? null,
       connected:
         (this.buses.get(name)?.waiters.length ?? 0) > 0 ||
         now - (this.meta.get(name)?.lastSeen ?? 0) < 90_000,
@@ -177,6 +200,7 @@ function publicItem(s) {
     title: s.title,
     kind: s.kind,
     data: s.data,
+    verdict: s.verdict,
     ts: s.ts,
     queued: gallery.length,
   };
@@ -283,10 +307,12 @@ function openCanvas() {
 
 const log = (m) => console.log(`[body] ${m}`);
 
-// one mouth for everyone: caption + Kokoro, used by brains and the body itself
-function say(text) {
+// one mouth for everyone: caption + Kokoro, used by brains and the body
+// itself. A session's registered Kokoro speaker rides along so each brain
+// can sound like itself; no sid = the Eye's own voice.
+function say(text, sid) {
   eye?.webContents.send("speak", text);
-  if (voiceReady) voice.postMessage({ type: "speak", id: ++speakSeq, text });
+  if (voiceReady) voice.postMessage({ type: "speak", id: ++speakSeq, text, sid });
 }
 
 // a whisper: the caption decodes on screen but no voice — for connection
@@ -532,6 +558,14 @@ app.whenReady().then(() => {
     sendDock();
   });
   ipcMain.on("canvas-close", () => canvas?.hide());
+  // the dock is the one clickable spot on an otherwise click-through eye:
+  // the renderer reports hover over a mark, we let clicks land just there
+  ipcMain.on("dock-hover", (_e, over) => eye?.setIgnoreMouseEvents(!over, { forward: true }));
+  ipcMain.on("dock-click", (_e, { kind, session }) => {
+    log(`dock click: ${kind} ${session}`);
+    if (kind === "show") openCanvas();
+    else routeTo(session); // clicking a held call answers it
+  });
   createEye();
   startVoice(cfg);
   startPtt();
@@ -542,9 +576,17 @@ app.whenReady().then(() => {
     secret: cfg.secret,
     hub,
     log,
-    onSpeak: async (text) => {
-      log(`speak: ${process.env.DARK_EYE_DEBUG ? text : `[${text.length} chars]`}`);
-      say(text);
+    onSpeak: async ({ text, session }) => {
+      log(`speak${session ? ` as ${session}` : ""}: ${process.env.DARK_EYE_DEBUG ? text : `[${text.length} chars]`}`);
+      if (session && !hub.reg.has(session)) hub.register(session);
+      // the mouth belongs to the ACTIVE channel: a background session cannot
+      // talk over the conversation — its words land as a silent caption, and
+      // getting his ear properly is what attention (the hold queue) is for
+      if (session && session !== hub.active) {
+        whisper(`⟨ ${session} ⟩ ${text}`);
+        return;
+      }
+      say(text, session ? hub.reg.get(session)?.sid : undefined);
     },
     onStatus: async (s) => {
       log(`status: ${s.id} ${s.state} ${s.label}`);
@@ -570,13 +612,14 @@ app.whenReady().then(() => {
       } else if (i >= 0) waiting.splice(i, 1);
       sendDock();
     },
-    onShow: async ({ session, title, kind, data }) => {
+    onShow: async ({ session, title, kind, data, verdict }) => {
       const item = {
         id: "s" + ++showSeq,
         session,
         title: title || "untitled",
         kind,
         data,
+        verdict: !!verdict,
         ts: Date.now(),
       };
       gallery.push(item);
@@ -601,11 +644,11 @@ app.whenReady().then(() => {
       hub.setBrief(session, brief);
       whisper(`⟨ ${session} ⟩ ${brief}`);
     },
-    onRegister: async ({ name, color, brief }) => {
-      const r = hub.register(name, color);
+    onRegister: async ({ name, color, voice, brief }) => {
+      const r = hub.register(name, color, voice);
       if (r.error) return r;
       if (brief) hub.setBrief(r.name, brief);
-      log(`register: ${r.name} ${r.color}${r.note ? ` (${r.note})` : ""}`);
+      log(`register: ${r.name} ${r.color} voice=${r.voice}${r.note ? ` (${r.note})` : ""}`);
       whisper(`⟨ ${r.name} ⟩ joined${brief ? " · " + brief : ""}`);
       return { ...r, active: hub.active, sessions: hub.roster() };
     },

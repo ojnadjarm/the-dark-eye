@@ -14,18 +14,22 @@ usage() {
 usage: eye.sh <command> [args]
 
   sessions                              roster + who has Oscar's voice
-  register <name> [brief]               join the roster (hub assigns a color)
+  register <name> [--voice <sid>] [brief]  join the roster (hub assigns a color and
+                                        a Kokoro voice; sid 0-52, 17 = the Eye's)
   introduce <name> <brief...>           set the one-line brief shown in the tray
-  speak <text...>                       the Eye says it out loud (+ caption)
+  speak [--as <name>] <text...>         say it out loud (+ caption); --as = your
+                                        session's own voice, else the Eye's
   listen <name> [timeoutMs]             one long-poll; prints "VOICE:/EVENT: ..." if any
   listen-loop <name>                    infinite poll; emits "VOICE: ..." lines
                                         (and "EVENT: ..." body events — channel-open
                                         when Oscar answers your held call,
                                         canvas-approved/rejected verdicts)
-  show <name> <title> <file|->          put a visual on Oscar's canvas (html, image,
+  show <name> <title> <file|-> [--ask]  put a visual on Oscar's canvas (html, image,
                                         or text file; '-' reads HTML from stdin).
-                                        Never opens by itself — he gets a pending
-                                        mark by the eye and opens it when he wants
+                                        Never opens by itself — he gets a clickable
+                                        mark by the eye and opens it when he wants.
+                                        --ask = you need his approve/reject verdict;
+                                        without it he just looks and dismisses
   status <id> <working|done|error> <label...>   orbiter around the eye
   attention <name> <on|off> [label...]  join/leave the hold queue for his attention
   active <name>                         route Oscar's voice to <name> (silent)
@@ -60,7 +64,7 @@ checkname() { # session names match the hub's own sanitizer
   [[ "$1" =~ ^[a-z0-9-]{1,16}$ ]] || die "bad session name '$1' — lowercase letters, digits, dashes"
 }
 
-jbody() { # jbody key1,key2,... val1 val2 ...  (empty vals dropped; only "on" is boolean)
+jbody() { # jbody key1,key2,... val1 val2 ...  (empty vals dropped; "on" boolean, "voice" int)
   python3 -c '
 import json, sys
 keys = sys.argv[1].split(",")
@@ -68,7 +72,7 @@ out = {}
 for k, v in zip(keys, sys.argv[2:]):
     if v == "":
         continue
-    out[k] = (v == "true") if k == "on" else v
+    out[k] = (v == "true") if k == "on" else (int(v) if k == "voice" else v)
 print(json.dumps(out))' "$@"
 }
 
@@ -102,10 +106,16 @@ case "$cmd" in
     api GET /bridge/sessions
     echo ;;
   register)
-    name=${1:?usage: eye.sh register <name> [brief]}
+    name=${1:?usage: eye.sh register <name> [--voice <sid>] [brief]}
     shift || true
+    vid=""
+    if [ "${1:-}" = --voice ]; then
+      vid=${2:?usage: eye.sh register <name> --voice <sid> [brief]}
+      [[ "$vid" =~ ^[0-9]+$ ]] || die "voice sid must be a number, got '$vid'"
+      shift 2
+    fi
     checkname "$name"
-    api POST /bridge/register "$(jbody name,brief "$name" "${*:-}")"
+    api POST /bridge/register "$(jbody name,voice,brief "$name" "$vid" "${*:-}")"
     echo ;;
   introduce)
     name=${1:?usage: eye.sh introduce <name> <brief...>}
@@ -115,8 +125,14 @@ case "$cmd" in
     api POST /bridge/introduce "$(jbody session,brief "$name" "$*")"
     echo ;;
   speak)
-    [ $# -gt 0 ] || die "usage: eye.sh speak <text...>"
-    EYE_CURL_TIMEOUT=30 api POST /bridge/speak "$(jbody text "$*")"
+    as=""
+    if [ "${1:-}" = --as ]; then
+      as=${2:?usage: eye.sh speak --as <name> <text...>}
+      checkname "$as"
+      shift 2
+    fi
+    [ $# -gt 0 ] || die "usage: eye.sh speak [--as <name>] <text...>"
+    EYE_CURL_TIMEOUT=30 api POST /bridge/speak "$(jbody text,session "$*" "$as")"
     echo ;;
   listen)
     name=${1:?usage: eye.sh listen <name> [timeoutMs]}
@@ -128,6 +144,11 @@ case "$cmd" in
   listen-loop)
     name=${1:?usage: eye.sh listen-loop <name>}
     checkname "$name"
+    # the loop is a session's ear — it must survive anything: connection
+    # resets mid-restart, python hiccups, all of it. errexit off from here;
+    # if it still dies, say what killed it so the monitor log shows a cause.
+    set +e
+    trap 'echo "LISTEN-LOOP DIED: rc=$? last=$BASH_COMMAND"' EXIT
     state=up
     while true; do
       r=$(EYE_CURL_TIMEOUT=60 api GET "/bridge/listen?timeoutMs=50000&session=$name" 2>/dev/null || true)
@@ -142,16 +163,18 @@ case "$cmd" in
       sleep 0.2
     done ;;
   show)
-    name=${1:?usage: eye.sh show <name> <title> <file|->}
-    title=${2:?usage: eye.sh show <name> <title> <file|->}
-    src=${3:?usage: eye.sh show <name> <title> <file|-> ('-' = HTML on stdin)}
+    name=${1:?usage: eye.sh show <name> <title> <file|-> [--ask]}
+    title=${2:?usage: eye.sh show <name> <title> <file|-> [--ask]}
+    src=${3:?usage: eye.sh show <name> <title> <file|-> [--ask] ('-' = HTML on stdin)}
+    ask=false
+    [ "${4:-}" = --ask ] && ask=true
     checkname "$name"
     [ "$src" = - ] || [ -r "$src" ] || die "cannot read: $src"
     tmp=$(mktemp)
     trap 'rm -f "$tmp"' EXIT
-    python3 - "$name" "$title" "$src" > "$tmp" <<'PYEOF' || die "could not package $src"
+    python3 - "$name" "$title" "$src" "$ask" > "$tmp" <<'PYEOF' || die "could not package $src"
 import base64, json, os, sys
-name, title, src = sys.argv[1:4]
+name, title, src, ask = sys.argv[1:5]
 MAX = 24_000_000  # raw bytes; base64 stays under the body's 32MB gate
 IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
               ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
@@ -172,7 +195,8 @@ else:
     except UnicodeDecodeError:
         sys.exit(f"{src}: binary data — only images ({', '.join(IMAGE_MIME)}) or utf-8 text")
     kind = "html" if ext in (".html", ".htm") else "text"
-json.dump({"session": name, "title": title, "kind": kind, "data": data}, sys.stdout)
+json.dump({"session": name, "title": title, "kind": kind, "data": data,
+           "verdict": ask == "true"}, sys.stdout)
 PYEOF
     api_file POST /bridge/show "$tmp"
     echo ;;

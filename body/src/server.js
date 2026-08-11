@@ -50,11 +50,12 @@ function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, onS
       inputSchema: {
         name: z.string().describe("Your session name, e.g. 'research' — lowercase, short"),
         color: z.string().optional().describe("Preferred hex color like '#ff9a4d'; auto-assigned if taken/omitted"),
+        voice: z.number().optional().describe("Preferred Kokoro speaker sid 0-52 (17 is the Eye's — refused); auto-assigned if taken/omitted"),
         brief: z.string().optional().describe("One line: what this session is doing"),
       },
     },
-    async ({ name, color, brief }) => {
-      const r = await onRegister({ name, color, brief });
+    async ({ name, color, voice, brief }) => {
+      const r = await onRegister({ name, color, voice, brief });
       return { content: [{ type: "text", text: JSON.stringify(r) }] };
     }
   );
@@ -102,17 +103,25 @@ function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, onS
       description:
         "Put something visual on Oscar's canvas — a mockup, a graph, a page. It NEVER opens " +
         "by itself: he gets a silent pending mark by the eye and opens the canvas when he " +
-        "wants. His verdict comes back on your listen channel as [event: canvas-approved] " +
-        "or [event: canvas-rejected].",
+        "wants. Set verdict:true ONLY when you need an explicit decision — then he gets " +
+        "approve/reject buttons and the answer comes back on your listen channel as " +
+        "[event: canvas-approved] or [event: canvas-rejected]. Otherwise he just looks.",
       inputSchema: {
         title: z.string().describe("Short human title, e.g. 'login mockup v2'"),
         data: z.string().describe("The content itself: full HTML, plain text, or a data: URL for an image"),
         kind: z.enum(["html", "image", "text"]).optional().describe("Default 'html'"),
+        verdict: z.boolean().optional().describe("true = you need his approve/reject decision (default false)"),
         session: z.string().optional().describe("Your registered session name (default 'fast')"),
       },
     },
-    async ({ title, data, kind, session }) => {
-      const r = await onShow({ session: session || "fast", title, kind: kind || "html", data });
+    async ({ title, data, kind, verdict, session }) => {
+      const r = await onShow({
+        session: session || "fast",
+        title,
+        kind: kind || "html",
+        data,
+        verdict: !!verdict,
+      });
       return { content: [{ type: "text", text: JSON.stringify(r) }] };
     }
   );
@@ -142,11 +151,15 @@ function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, onS
     {
       description:
         "Speak to Oscar out loud through the Eye. This is your voice — use it to answer him. " +
-        "Plain spoken language, no markdown, under 150 words.",
-      inputSchema: { text: z.string().describe("What to say, written for the ear") },
+        "Plain spoken language, no markdown, under 150 words. Pass your session name so you " +
+        "speak with your session's own Kokoro voice; without it the Eye's default voice is used.",
+      inputSchema: {
+        text: z.string().describe("What to say, written for the ear"),
+        session: z.string().optional().describe("Your registered session name (default 'fast')"),
+      },
     },
-    async ({ text }) => {
-      await onSpeak(text);
+    async ({ text, session }) => {
+      await onSpeak({ text, session: session || "fast" });
       return { content: [{ type: "text", text: "spoken" }] };
     }
   );
@@ -212,7 +225,10 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
     if (req.url === "/bridge/speak" && req.method === "POST") {
       try {
         const body = await readBody(req);
-        await onSpeak(String(body?.text ?? ""));
+        await onSpeak({
+          text: String(body?.text ?? ""),
+          session: body?.session ? String(body.session) : undefined,
+        });
         res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
       } catch (err) {
         log(`bridge speak error: ${err.message}`);
@@ -268,6 +284,7 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
           title: String(body?.title ?? ""),
           kind: ["html", "image", "text"].includes(body?.kind) ? body.kind : "html",
           data,
+          verdict: !!body?.verdict,
         });
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(r));
       } catch (err) {
@@ -297,6 +314,7 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
         const r = await onRegister({
           name: body?.name,
           color: body?.color,
+          voice: body?.voice,
           brief: body?.brief ? String(body.brief) : undefined,
         });
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(r));

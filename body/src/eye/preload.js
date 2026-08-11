@@ -9,5 +9,7 @@ contextBridge.exposeInMainWorld("eye", {
   onSession: (fn) => ipcRenderer.on("session", (_e, s) => fn(s)),
   onDock: (fn) => ipcRenderer.on("dock", (_e, d) => fn(d)),
   sendMic: (payload) => ipcRenderer.send("mic-audio", payload),
+  dockHover: (over) => ipcRenderer.send("dock-hover", over),
+  dockClick: (mark) => ipcRenderer.send("dock-click", mark),
   debug: (m) => ipcRenderer.send("debug", m),
 });

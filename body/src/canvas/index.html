@@ -57,6 +57,7 @@
   <span id="queue"></span>
   <button id="approve">approve</button>
   <button id="reject">reject</button>
+  <button id="dismiss">dismiss</button>
   <button id="later">later</button>
   <button id="close">✕</button>
 </div>
@@ -76,7 +77,7 @@
       $('title').textContent = '';
       $('queue').textContent = '';
       $('dot').style.background = '#4dffa0';
-      for (const b of ['approve', 'reject', 'later']) $(b).style.display = 'none';
+      for (const b of ['approve', 'reject', 'dismiss', 'later']) $(b).style.display = 'none';
       return;
     }
     $('empty').style.display = 'none';
@@ -84,7 +85,12 @@
     $('who').textContent = '⟨ ' + item.session + ' ⟩';
     $('title').textContent = item.title;
     $('queue').textContent = item.queued > 1 ? item.queued - 1 + ' more waiting' : '';
-    for (const b of ['approve', 'reject', 'later']) $(b).style.display = '';
+    // approve/reject exist only when the sender asked for a decision;
+    // everything else is just looked at and dismissed
+    $('approve').style.display = item.verdict ? '' : 'none';
+    $('reject').style.display = item.verdict ? '' : 'none';
+    $('dismiss').style.display = item.verdict ? 'none' : '';
+    $('later').style.display = '';
     if (item.kind === 'image') {
       const img = document.createElement('img');
       img.src = item.data;
@@ -104,6 +110,7 @@
 
   $('approve').onclick = () => current && window.canvasApi.verdict(current.id, 'approved');
   $('reject').onclick = () => current && window.canvasApi.verdict(current.id, 'rejected');
+  $('dismiss').onclick = () => current && window.canvasApi.verdict(current.id, 'dismissed');
   $('later').onclick = () => window.canvasApi.close();
   $('close').onclick = () => window.canvasApi.close();
   window.canvasApi.onItem(render);

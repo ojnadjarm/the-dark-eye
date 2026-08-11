@@ -42,7 +42,9 @@ Host from WSL: default gateway, currently `172.18.192.1` (read
 `/proc/net/route`, NOT resolv.conf — DNS tunneling lies).
 
 ```
-POST /bridge/speak     {"text": "..."}                      → Eye speaks it (Kokoro) + decode caption
+POST /bridge/speak     {"text","session"?}                  → Eye speaks it (Kokoro) + decode caption; "session"
+                                                              = that brain's own registered voice, else Eye default
+                                                              (sid 17; pool 11-19 auto-assigned, 17 reserved)
 GET  /bridge/listen?timeoutMs=50000&session=deep            → long-poll; {"transcript": "..."|null} — or a body
                                                               event instead: {"transcript":null,"event":"channel-open"
                                                               |"canvas-approved"|"canvas-rejected","detail":"..."}
@@ -53,7 +55,7 @@ POST /bridge/status    {"id","state":"working|done|error","label"} → colored o
 POST /bridge/cloak     {"on": true|false}                   → hide/show from screen recorders
 POST /bridge/attention {"session","on":true|false,"label"}  → eye tints/pulses in that session's color
 POST /bridge/active    {"session": "deep"}                  → route Oscar's voice to that session (no announcement)
-POST /bridge/register  {"name","color":"#hex?","brief"?}    → join the roster; green refused; a name that is
+POST /bridge/register  {"name","color"?,"voice"?,"brief"?}  → join the roster; green refused; a name that is
                                                               live RIGHT NOW is refused (HTTP 200 {"error":...},
                                                               idle names are reusable); success returns
                                                               {name,color,note?,active,sessions}

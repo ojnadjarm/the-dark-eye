@@ -494,22 +494,35 @@
     }
 
     // the dock: held calls (bare glyph, slow pulse) and pending visuals
-    // (glyph in a thin card frame) stacked on the left, out of the eye's way
+    // (glyph in a thin card frame) stacked on the left, out of the eye's way.
+    // Marks are the eye's ONE clickable spot: click a show to open the
+    // canvas, click a call to answer it.
+    markRects.length = 0;
     dock.marks.slice(0, 8).forEach((m, i) => {
       const key = m.session + ':' + m.kind;
       if (!markGlyphs.has(key)) markGlyphs.set(key, kata());
       if (Math.random() < 0.004) markGlyphs.set(key, kata());
-      const x = 22, y = CY + 20 - i * 24;
+      // his spec: clearly visible — a real square badge, glyph inside
+      const S = 28, bx = 12, by = CY + 22 - i * (S + 8) - S;
+      markRects.push({ x: bx, y: by, w: S, h: S, kind: m.kind, session: m.session, key });
+      const hovered = hoverKey === key;
       const [mr, mg, mb] = hexRGB(m.color || '#9db4ff');
-      const a = 0.55 + 0.3 * Math.sin(t * 1.8 + i * 1.3);
-      g.font = '13px ' + GLYPH_FONT;
-      g.fillStyle = 'rgba(' + mr + ',' + mg + ',' + mb + ',' + a + ')';
-      g.fillText(markGlyphs.get(key), x, y);
+      const a = hovered ? 1 : 0.6 + 0.28 * Math.sin(t * 1.8 + i * 1.3);
+      const col = (k) => 'rgba(' + mr + ',' + mg + ',' + mb + ',' + k + ')';
+      g.fillStyle = 'rgba(3,10,6,' + 0.75 * a + ')';
+      g.fillRect(bx, by, S, S);
+      g.strokeStyle = col(a);
+      g.lineWidth = hovered ? 2 : m.kind === 'show' ? 1.5 : 1;
+      g.strokeRect(bx + 0.5, by + 0.5, S - 1, S - 1);
       if (m.kind === 'show') {
-        g.strokeStyle = 'rgba(' + mr + ',' + mg + ',' + mb + ',' + a * 0.8 + ')';
+        // double frame marks a visual waiting on the canvas
         g.lineWidth = 1;
-        g.strokeRect(x - 5, y - 13, 18, 18);
+        g.strokeStyle = col(a * 0.55);
+        g.strokeRect(bx + 3.5, by + 3.5, S - 7, S - 7);
       }
+      g.font = '16px ' + GLYPH_FONT;
+      g.fillStyle = col(Math.min(1, a + 0.15));
+      g.fillText(markGlyphs.get(key), bx + S / 2 - 8, by + S / 2 + 6);
     });
 
     // listening: quiet expanding rings — the Eye leans in
@@ -616,6 +629,27 @@
   // what he said, echoed briefly in gold above the eye
   let heard = null;
   window.eye.onHeard((text) => { heard = { text, until: Date.now() + 4500 }; });
+
+  // the window is click-through; while the cursor sits on a dock mark we ask
+  // main to let clicks land (mousemove keeps arriving thanks to forward:true)
+  const markRects = [];
+  let hoverKey = null;
+  const hitMark = (ev) =>
+    markRects.find((r) => ev.clientX >= r.x && ev.clientX <= r.x + r.w &&
+                          ev.clientY >= r.y && ev.clientY <= r.y + r.h) || null;
+  window.addEventListener('mousemove', (ev) => {
+    const hit = hitMark(ev);
+    const key = hit ? hit.key : null;
+    if (key !== hoverKey) {
+      hoverKey = key;
+      window.eye.dockHover(!!key);
+      c.style.cursor = key ? 'pointer' : 'default';
+    }
+  });
+  window.addEventListener('click', (ev) => {
+    const hit = hitMark(ev);
+    if (hit) window.eye.dockClick({ kind: hit.kind, session: hit.session });
+  });
 
   window.eye.onSession((s) => { sessionTag = { name: s.active, color: s.color }; });
   window.eye.onDock((d) => {

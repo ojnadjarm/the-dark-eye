@@ -49,9 +49,11 @@ session, pick a variant.
     /home/onadjar/projects/the-dark-eye/bridge/eye.sh register <name> "<one-line brief of what this session is>"
 
 The hub assigns you a unique color (green is refused — green is the Eye's
-alone) and returns `{name, color, note?, active, sessions}`. A silent
-"⟨name⟩ joined" caption decodes on the Eye. If the response is
-`{"error": ...}` the name is live or invalid — pick another and retry.
+alone) and a unique Kokoro voice (add `--voice <sid>` before the brief to
+pick one yourself; 0-52, 17 is the Eye's own and refused), and returns
+`{name, color, voice, note?, active, sessions}`. A silent "⟨name⟩ joined"
+caption decodes on the Eye. If the response is `{"error": ...}` the name is
+live or invalid — pick another and retry.
 
 ## 4. Arm the voice monitor — THE critical step
 
@@ -88,8 +90,11 @@ on the Eye.
 
 ## Answering voice
 
-- Reply with `eye.sh speak "<text>"` (absolute path) — plain spoken language
-  written for the ear, no markdown, under 150 words. **Voice is the answer.**
+- Reply with `eye.sh speak --as <name> "<text>"` (absolute path) — plain
+  spoken language written for the ear, no markdown, under 150 words.
+  `--as <name>` makes you speak with your session's own voice so Oscar can
+  tell brains apart by ear; without it you sound like the Eye itself.
+  **Voice is the answer.**
   Keep the terminal text tiny — one or two lines of trace at most, no
   restating what you already said aloud. Write more in the terminal only for
   things that must be read (code, paths, links, tables) or when Oscar asks.
@@ -108,14 +113,17 @@ on the Eye.
 When Oscar asks for a mockup, a graph, a page — anything visual — write it
 to a file (self-contained HTML, an image, or plain text) and push it:
 
-    /home/onadjar/projects/the-dark-eye/bridge/eye.sh show <name> "<short title>" <file>
+    /home/onadjar/projects/the-dark-eye/bridge/eye.sh show <name> "<short title>" <file> [--ask]
 
 (`-` instead of a file reads HTML from stdin.) The canvas **never opens by
-itself** — Oscar's hard rule. He gets a silent pending mark by the eye and a
-whispered caption; he opens it when he wants by saying "show me" or from the
-tray. His verdict arrives on your monitor as `EVENT: canvas-approved` /
-`EVENT: canvas-rejected`. After pushing, say (or print) one short line that
-it's on the canvas — never nag him to open it.
+itself** — Oscar's hard rule. He gets a clickable pending mark by the eye
+and a whispered caption; he opens it by clicking the mark, saying "show me",
+or from the tray. Add `--ask` ONLY when you need his explicit decision —
+that puts approve/reject buttons on the canvas and his verdict arrives on
+your monitor as `EVENT: canvas-approved` / `EVENT: canvas-rejected`.
+Without `--ask` he just looks and dismisses (no event comes back). After
+pushing, say (or print) one short line that it's on the canvas — never nag
+him to open it.
 
 Canvas HTML is rendered in a sandboxed frame with no network access — keep
 it self-contained: inline CSS/JS, images as data: URIs.
