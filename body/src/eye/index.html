@@ -501,21 +501,21 @@
     // the chat button — the Eye's own furniture, permanently docked at the
     // bottom slot: green (it belongs to the Eye, not an agent), dim until
     // hovered, click toggles the canvas/chat. Pending marks stack above it.
+    // the chat sigil — ONE bare glyph at the eye's bottom right, bigger (his
+    // spec; this bare-sigil style is the pattern for future function marks).
+    // No frame, no backing. Dim at rest, revealed near the eye, ignited on
+    // hover. The hitbox is generous so the click-capture arms on approach —
+    // the two-clicks bug was the hover IPC racing his click.
     {
-      const S = 28, bx = 12, by = CY + 22 - S;
-      markRects.push({ x: bx, y: by, w: S, h: S, kind: 'chat', session: 'eye', key: 'eye:chat' });
+      markRects.push({ x: 288, y: 326, w: 52, h: 54, kind: 'chat', session: 'eye', key: 'eye:chat' });
       const hovered = hoverKey === 'eye:chat';
-      if (!markGlyphs.has('eye:chat')) markGlyphs.set('eye:chat', kata());
-      if (Math.random() < 0.002) markGlyphs.set('eye:chat', kata());
-      const a = hovered ? 0.95 : 0.4;
-      g.fillStyle = 'rgba(3,10,6,' + 0.75 * a + ')';
-      g.fillRect(bx, by, S, S);
-      g.strokeStyle = 'rgba(77,255,160,' + a * 0.8 + ')';
-      g.lineWidth = hovered ? 1.5 : 1;
-      g.strokeRect(bx + 0.5, by + 0.5, S - 1, S - 1);
-      g.font = '16px ' + GLYPH_FONT;
-      g.fillStyle = 'rgba(77,255,160,' + a + ')';
-      g.fillText(markGlyphs.get('eye:chat'), bx + S / 2 - 8, by + S / 2 + 6);
+      const reveal = hovered || t - eyeHoverT < 0.5; // near the eye = shown
+      if (Math.random() < 0.003) chatSigil[0] = gidx();
+      const shimmer = 0.7 + 0.3 * Math.sin(t * 1.1);
+      const tier = hovered ? 4 : reveal ? 2 : 1;
+      g.globalAlpha = hovered ? 1 : reveal ? 0.85 : 0.5 * shimmer;
+      blit(g, chatSigil[0], tier, 312, 356, hovered ? 22 : 20);
+      g.globalAlpha = 1;
     }
     dock.marks.slice(0, 8).forEach((m, i) => {
       const key = m.session + ':' + m.kind;
@@ -652,22 +652,44 @@
   // the window is click-through; while the cursor sits on a dock mark we ask
   // main to let clicks land (mousemove keeps arriving thanks to forward:true)
   const markRects = [];
+  const chatSigil = [gidx(), gidx(), gidx()];
   let hoverKey = null;
+  // hovering anywhere over the eye reveals the chat sigil (his ask — the
+  // bare sigil alone is too hidden). Click-through windows get no reliable
+  // mouseleave, so the reveal decays when mousemove goes quiet.
+  let eyeHoverT = -10;
+  let captureOn = false;
+  const setCapture = (on) => {
+    if (on === captureOn) return;
+    captureOn = on;
+    window.eye.dockHover(on);
+  };
   const hitMark = (ev) =>
     markRects.find((r) => ev.clientX >= r.x && ev.clientX <= r.x + r.w &&
                           ev.clientY >= r.y && ev.clientY <= r.y + r.h) || null;
   window.addEventListener('mousemove', (ev) => {
+    // clicks arm over the whole reveal zone, not just the tiny targets —
+    // arming on target-entry raced his click (the first-click bug)
+    const inZone = ev.clientX > CX - RX - 30 && ev.clientY > CY - RY - 34;
+    if (inZone) eyeHoverT = t;
+    setCapture(inZone);
     const hit = hitMark(ev);
     const key = hit ? hit.key : null;
     if (key !== hoverKey) {
       hoverKey = key;
-      window.eye.dockHover(!!key);
       c.style.cursor = key ? 'pointer' : 'default';
     }
   });
   window.addEventListener('click', (ev) => {
     const hit = hitMark(ev);
     if (hit) window.eye.dockClick({ kind: hit.kind, session: hit.session });
+  });
+  // while captured the window is a normal one, so leave events are reliable —
+  // a timer here would release capture under a resting cursor mid-click
+  document.addEventListener('mouseleave', () => {
+    setCapture(false);
+    hoverKey = null;
+    c.style.cursor = 'default';
   });
 
   window.eye.onSession((s) => { sessionTag = { name: s.active, color: s.color }; });

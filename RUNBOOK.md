@@ -280,6 +280,20 @@ manually").
    `{event:"image",detail:"/mnt/c/..."}` and Reads the file itself.
    "open canvas" now works with an empty gallery — the chat is reason enough.
 
+## Technical debt (parked by him, 2026-08-11)
+
+- **First-click-after-restart on the chat sigil does nothing**; every later
+  click works (also his original two-clicks report). Tried and NOT it:
+  lazy canvas creation (now built at boot), small hitbox (now generous),
+  hover-IPC race (capture now arms zone-wide the moment the cursor nears
+  the eye). Remaining suspects: Windows consumes the first physical click
+  on a never-yet-interactive click-through window (focusable:false +
+  setIgnoreMouseEvents interplay), or 'click' is suppressed when capture
+  toggles between mousedown and mouseup. Next ideas: listen on 'mousedown'
+  instead of 'click'; prime input once at boot (toggle ignoreMouseEvents
+  off/on); DARK_EYE_DEBUG-log renderer mousedown/click on the failing
+  first click to see what actually arrives.
+
 ## Still open
 
 - Future: live-session watching (show his browsing while thinking aloud) —

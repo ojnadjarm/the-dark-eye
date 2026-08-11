@@ -618,6 +618,7 @@ app.whenReady().then(() => {
     else routeTo(session); // clicking a held call answers it
   });
   createEye();
+  createCanvas(); // built hidden at boot — the first click must be as instant as the rest
   startVoice(cfg);
   startPtt();
   startTray();
