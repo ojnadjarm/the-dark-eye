@@ -182,6 +182,10 @@ const HELD_WHY = "words on hold";
 const GALLERY_MAX = 12;
 let showSeq = 0;
 
+// pasted images land here as files; brains get the WSL path and read them
+const INBOX = path.join(__dirname, "..", "..", "inbox");
+const wslPath = (p) => p.replace(/\\/g, "/").replace(/^([A-Za-z]):\//, (_, d) => `/mnt/${d.toLowerCase()}/`);
+
 // the eye shows: the FRONT caller tints the whole organism (the shipped
 // attention look), everyone else is a small colored mark docked beside it
 function sendDock() {
@@ -303,6 +307,7 @@ function openCanvas() {
   if (!canvas) createCanvas();
   const item = gallery[0] ?? null;
   const present = () => {
+    canvas.webContents.send("session", { active: hub.active, color: sessionColor(hub.active) });
     canvas.webContents.send("canvas-item", item ? publicItem(item) : null);
     canvas.show();
   };
@@ -333,6 +338,7 @@ function routeTo(name, { announce = false } = {}) {
   hub.active = name;
   log(`voice routed to session: ${name}`);
   eye?.webContents.send("session", { active: name, color: sessionColor(name) });
+  canvas?.webContents.send("session", { active: name, color: sessionColor(name) });
   const i = waiting.findIndex((w) => w.session === name);
   const held = i >= 0 ? waiting.splice(i, 1)[0] : null;
   if (held) hub.bus(name).push({ event: "channel-open", detail: held.why || "" });
@@ -371,9 +377,9 @@ function handleTranscript(text) {
     return;
   }
   if (CANVAS_RE.test(text.trim())) {
+    // empty is fine now — the canvas is also the chat: type links, paste images
     if (/close|cierra/i.test(text)) canvas?.hide();
-    else if (gallery.length) openCanvas();
-    else say("The canvas is empty — nothing waiting to be shown.");
+    else openCanvas();
     return;
   }
   if (WAITING_RE.test(text) && words.length <= 6) {
@@ -569,6 +575,33 @@ app.whenReady().then(() => {
     sendDock();
   });
   ipcMain.on("canvas-close", () => canvas?.hide());
+  // the chat bar: typed words are his words — straight to the active session,
+  // echoed in gold on the eye exactly like something it heard
+  ipcMain.on("canvas-chat", (_e, text) => {
+    const clean = String(text ?? "").trim();
+    if (!clean) return;
+    log(`chat → ${hub.active}: ${process.env.DARK_EYE_DEBUG ? clean : `[${clean.length} chars]`}`);
+    hub.push(clean);
+    eye?.webContents.send("heard", clean);
+  });
+  // a pasted image: saved to the inbox, the active brain gets the WSL path
+  // and reads the file itself (read-on-gesture — nothing is ever watched)
+  ipcMain.on("canvas-paste", (_e, { bytes }) => {
+    try {
+      if (!bytes || bytes.byteLength > 20_000_000) throw new Error("image missing or over 20MB");
+      fs.mkdirSync(INBOX, { recursive: true });
+      const file = path.join(INBOX, `paste-${Date.now()}.png`);
+      fs.writeFileSync(file, Buffer.from(bytes));
+      const wsl = wslPath(file);
+      log(`paste → ${hub.active}: ${wsl} (${bytes.byteLength} bytes)`);
+      hub.bus(hub.active).push({ event: "image", detail: wsl });
+      eye?.webContents.send("heard", "⟨ image ⟩");
+      canvas?.webContents.send("note", `image sent → ${hub.active}`);
+    } catch (err) {
+      log(`paste error: ${err.message}`);
+      canvas?.webContents.send("note", `paste failed: ${err.message}`);
+    }
+  });
   // the dock is the one clickable spot on an otherwise click-through eye:
   // the renderer reports hover over a mark, we let clicks land just there
   ipcMain.on("dock-hover", (_e, over) => eye?.setIgnoreMouseEvents(!over, { forward: true }));

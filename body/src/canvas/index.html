@@ -35,7 +35,7 @@
   #reject { color: #ff3b4d; border-color: #6b1c24; }
   #reject:hover { background: #240a0d; }
   #close { border: none; padding: 4px 8px; color: #4a7a5e; }
-  #stage { position: absolute; inset: 38px 0 0 0; }
+  #stage { position: absolute; inset: 38px 0 44px 0; }
   #stage iframe { width: 100%; height: 100%; border: 0; background: #fff; }
   #stage img { max-width: 100%; max-height: 100%; display: block; margin: 0 auto; object-fit: contain; }
   #stage pre {
@@ -43,10 +43,24 @@
     overflow: auto; white-space: pre-wrap; color: #9fffc8;
   }
   #empty {
-    position: absolute; inset: 38px 0 0 0;
+    position: absolute; inset: 38px 0 44px 0;
     display: flex; align-items: center; justify-content: center;
     color: #2f9e63; letter-spacing: 0.2em;
   }
+  #bar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 44px;
+    display: flex; align-items: center; gap: 8px; padding: 0 10px;
+    background: #070c0a; border-top: 1px solid #143826; box-sizing: border-box;
+  }
+  #to { flex: none; color: #6fdca4; white-space: nowrap; }
+  #todot { width: 8px; height: 8px; border-radius: 50%; background: #b04dff; flex: none; }
+  #chat {
+    flex: 1; background: #030a06; color: #eafff2; font: inherit;
+    border: 1px solid #143826; border-radius: 3px; padding: 6px 10px; outline: none;
+  }
+  #chat:focus { border-color: #2f9e63; }
+  #note { flex: none; color: #2f9e63; max-width: 30%; overflow: hidden;
+          text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -62,7 +76,13 @@
   <button id="close">✕</button>
 </div>
 <div id="stage"></div>
-<div id="empty">⟨ nothing on the canvas ⟩</div>
+<div id="empty">⟨ nothing on the canvas — the chat below still works ⟩</div>
+<div id="bar">
+  <div id="todot"></div>
+  <span id="to">→ deep</span>
+  <input id="chat" placeholder="type to the active brain — Enter sends, Ctrl+V pastes an image" spellcheck="false">
+  <span id="note"></span>
+</div>
 <script>
   const $ = (id) => document.getElementById(id);
   let current = null;
@@ -114,6 +134,36 @@
   $('later').onclick = () => window.canvasApi.close();
   $('close').onclick = () => window.canvasApi.close();
   window.canvasApi.onItem(render);
+
+  // -- the chat bar: typed words and pasted images go to the active brain ----
+  const chat = $('chat');
+  let noteTimer = null;
+  function note(text) {
+    $('note').textContent = text;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => { $('note').textContent = ''; }, 4000);
+  }
+  chat.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && chat.value.trim()) {
+      window.canvasApi.chat(chat.value.trim());
+      note('sent');
+      chat.value = '';
+    }
+  });
+  window.addEventListener('paste', async (e) => {
+    const items = [...(e.clipboardData?.items ?? [])];
+    const img = items.find((it) => it.type.startsWith('image/'));
+    if (!img) return; // plain text pastes into the input normally
+    e.preventDefault();
+    const buf = await img.getAsFile().arrayBuffer();
+    window.canvasApi.paste(new Uint8Array(buf));
+    note('sending image…');
+  });
+  window.canvasApi.onSession((s) => {
+    $('to').textContent = '→ ' + s.active;
+    $('todot').style.background = s.color || '#b04dff';
+  });
+  window.canvasApi.onNote(note);
   render(null);
 </script>
 </body>

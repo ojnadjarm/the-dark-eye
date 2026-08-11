@@ -272,6 +272,13 @@ manually").
    `[event: ...]`, `eye.sh` emits `EVENT:` lines (VOICE: unchanged).
    `bridge/SKILL.md` updated + reinstalled (channel-open = "speak your held
    question now"; canvas verdicts = act on them).
+4. **The chat bar + image inbox** (his ask: type links, paste screenshots) —
+   the canvas window carries a bottom input: typed text → active session's
+   bus as a normal transcript (gold heard-echo on the eye); Ctrl+V with an
+   image on the clipboard (read-on-gesture only, never watched) → PNG saved
+   to repo `inbox/` (gitignored) → active session gets
+   `{event:"image",detail:"/mnt/c/..."}` and Reads the file itself.
+   "open canvas" now works with an empty gallery — the chat is reason enough.
 
 ## Still open
 

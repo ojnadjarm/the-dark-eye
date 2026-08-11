@@ -3,3 +3,4 @@ dist/
 *.log
 body/models/
 body/scripts/*.wav
+inbox/

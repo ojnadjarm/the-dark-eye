@@ -76,6 +76,13 @@ Oscar's words:
   the one case where speaking first is right — he switched TO you for it).
 - `EVENT: canvas-approved — <title>` / `EVENT: canvas-rejected — <title>` —
   his verdict on a visual you put on the canvas. Act on it.
+- `EVENT: image — <path>` — Oscar pasted an image into the canvas chat for
+  you. Read the file at that path (it's a PNG, WSL-visible) and treat it as
+  something he just showed you.
+
+Oscar can also TYPE to you from the canvas chat bar — typed words arrive as
+normal `VOICE:` lines (they're his words either way; links usually arrive
+typed). Answer by voice as usual.
 
 ## 5. Confirm
 
