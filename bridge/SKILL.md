@@ -95,6 +95,11 @@ on the Eye.
   `--as <name>` makes you speak with your session's own voice so Oscar can
   tell brains apart by ear; without it you sound like the Eye itself.
   **Voice is the answer.**
+- **Speaking while another session has his voice does NOT play.** Oscar's
+  law: a background session overwrites nothing — voice or caption. Your
+  words are parked, you appear as a waiting call by the eye, and they play
+  in your voice the moment he switches to you. So speak normally when
+  active; when backgrounded, prefer one short summary line over many.
   Keep the terminal text tiny — one or two lines of trace at most, no
   restating what you already said aloud. Write more in the terminal only for
   things that must be read (code, paths, links, tables) or when Oscar asks.

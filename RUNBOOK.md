@@ -245,11 +245,17 @@ manually").
 
 1. **Call waiting** — `attention on` now joins an ordered hold queue
    (main.js `waiting`). The FRONT caller gets the shipped eye-tint look;
-   everyone behind renders as small colored glyph marks docked left of the
-   eye (+ a "⟨name⟩ waiting" whisper on arrival). Switching to a held
+   everyone behind renders as square badges docked left of the eye
+   (+ a "⟨name⟩ waiting" whisper on arrival). Switching to a held
    session (voice or tray) dequeues it, speaks the held reason, and pushes
    `{event:"channel-open",detail:why}` onto that session's bus so the agent
    knows to re-ask. Voice: "who's waiting" → spoken list of calls + canvas.
+   **The mouth belongs to the active channel (his law: "wait, always"):**
+   a background session's speak renders NOTHING — no voice, no caption. The
+   words are parked (last 5 per session), the session auto-joins the hold
+   queue ("words on hold"), and they play in ITS voice the moment he opens
+   that channel. Per-session voices: registry assigns unique Kokoro sids
+   (pool 11-19; 17 = the Eye's/deep's, refused to others; `--voice` to pick).
 2. **The canvas** — a hidden frameless dark window (`src/canvas/`), cloaks
    with the Eye. Sessions push visuals: `eye.sh show <name> <title> <file|->`
    (html/image/text; images ride as data: URLs) or MCP tool `show` →

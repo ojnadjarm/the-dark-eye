@@ -76,8 +76,11 @@ const hub = {
   names() {
     return [...new Set([...this.reg.keys(), ...this.buses.keys()])];
   },
-  // any session may join: unique name, unique non-green color, unique voice
-  register(name, color, voice) {
+  // any session may join: unique name, unique non-green color, unique voice.
+  // `adopt` is for the hub itself decorating a name that already exists as a
+  // live bus (auto-join on speak/attention) — the liveness guard only stops
+  // NEW registrants from stealing a live name, so adoption skips it.
+  register(name, color, voice, adopt = false) {
     const clean = String(name ?? "").toLowerCase().trim().replace(/[^a-z0-9-]/g, "").slice(0, 16);
     if (!clean) return { error: "invalid name — use letters, digits, dashes" };
     // a name that is live right now belongs to someone — two pollers on one
@@ -85,7 +88,7 @@ const hub = {
     const live =
       (this.buses.get(clean)?.waiters.length ?? 0) > 0 ||
       Date.now() - (this.meta.get(clean)?.lastSeen ?? 0) < 90_000;
-    if (live) return { error: `name '${clean}' is connected right now — pick another` };
+    if (live && !adopt) return { error: `name '${clean}' is connected right now — pick another` };
     const existing = this.reg.get(clean);
     const used = new Set(
       [...this.reg.entries()].filter(([n]) => n !== clean).map(([, r]) => r.color)
@@ -164,7 +167,7 @@ const hub = {
 
 // a session's color always comes from the registry; unknown names auto-join
 function sessionColor(name) {
-  if (!hub.reg.has(name)) hub.register(name);
+  if (!hub.reg.has(name)) hub.register(name, undefined, undefined, true);
   return hub.reg.get(name)?.color ?? "#9db4ff";
 }
 
@@ -174,6 +177,8 @@ function sessionColor(name) {
 // mark by the eye. He opens things himself — by voice or from the tray.
 const waiting = []; // calls on hold, oldest first: {session, why, ts}
 const gallery = []; // visuals awaiting his eyes: {id, session, title, kind, data, ts}
+const heldWords = new Map(); // session → [text] — speech parked while he's elsewhere
+const HELD_WHY = "words on hold";
 const GALLERY_MAX = 12;
 let showSeq = 0;
 
@@ -331,14 +336,20 @@ function routeTo(name, { announce = false } = {}) {
   const i = waiting.findIndex((w) => w.session === name);
   const held = i >= 0 ? waiting.splice(i, 1)[0] : null;
   if (held) hub.bus(name).push({ event: "channel-open", detail: held.why || "" });
+  const words = heldWords.get(name);
+  heldWords.delete(name);
   const shows = gallery.filter((s) => s.session === name).length;
+  const why = held?.why && held.why !== HELD_WHY ? held.why : "";
   if (announce)
     say(
       `Channel open. ${name} has your voice.` +
-        (held?.why ? ` They were waiting: ${held.why}.` : "") +
+        (why ? ` They were waiting: ${why}.` : "") +
         (shows ? ` ${shows === 1 ? "One visual" : shows + " visuals"} on the canvas.` : "")
     );
-  else if (held) whisper(`⟨ ${name} ⟩ call answered${held.why ? " · " + held.why : ""}`);
+  else if (held) whisper(`⟨ ${name} ⟩ call answered${why ? " · " + why : ""}`);
+  // opening the channel is the delivery moment: parked words play now,
+  // in that session's own voice
+  if (words?.length) say(words.join(" "), hub.reg.get(name)?.sid);
   sendDock();
 }
 
@@ -578,12 +589,18 @@ app.whenReady().then(() => {
     log,
     onSpeak: async ({ text, session }) => {
       log(`speak${session ? ` as ${session}` : ""}: ${process.env.DARK_EYE_DEBUG ? text : `[${text.length} chars]`}`);
-      if (session && !hub.reg.has(session)) hub.register(session);
-      // the mouth belongs to the ACTIVE channel: a background session cannot
-      // talk over the conversation — its words land as a silent caption, and
-      // getting his ear properly is what attention (the hold queue) is for
+      if (session && !hub.reg.has(session)) hub.register(session, undefined, undefined, true);
+      // his law: a background session overwrites NOTHING — not the voice,
+      // not the caption. It waits, always. Its words are parked and it joins
+      // the hold queue like a caller; the words play when he opens the channel.
       if (session && session !== hub.active) {
-        whisper(`⟨ ${session} ⟩ ${text}`);
+        const q = heldWords.get(session) ?? [];
+        q.push(text);
+        while (q.length > 5) q.shift();
+        heldWords.set(session, q);
+        if (!waiting.some((w) => w.session === session))
+          waiting.push({ session, why: HELD_WHY, ts: Date.now() });
+        sendDock();
         return;
       }
       say(text, session ? hub.reg.get(session)?.sid : undefined);
