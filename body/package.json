@@ -1,0 +1,19 @@
+{
+  "name": "@dark-eye/body",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The Dark Eye — body: Electron overlay (the Eye), voice worker, MCP server.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^42.0.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "sherpa-onnx-node": "^1.13.4",
+    "uiohook-napi": "^1.5.5",
+    "zod": "^4.4.3"
+  }
+}
