@@ -49,6 +49,8 @@ POST /bridge/status    {"id","state":"working|done|error","label"} → colored o
 POST /bridge/cloak     {"on": true|false}                   → hide/show from screen recorders
 POST /bridge/attention {"session","on":true|false,"label"}  → eye tints/pulses in that session's color
 POST /bridge/active    {"session": "deep"}                  → route Oscar's voice to that session (no announcement)
+POST /bridge/register  {"name","color":"#hex?","brief"?}    → join the roster; unique name+color enforced,
+                                                              green refused; returns {name,color,note?,sessions}
 POST /bridge/introduce {"session","brief":"one line"}       → silent caption + shown in tray next to the name
 GET  /bridge/sessions                                       → {"active": "...", "sessions": [...]}
 All with header: x-dark-eye-key: <secret>
@@ -58,6 +60,22 @@ Claude-session possession recipe: persistent Monitor running a
 `/bridge/listen` long-poll loop (each transcript line = one wake event),
 answer with curl to `/bridge/speak`, ping `/bridge/status` when doing real
 work so the orbiters stay honest.
+
+**Global MCP registration (2026-08-11):** the body is registered at USER
+scope in Claude Code (`~/.claude.json`), server name `dark-eye` — every new
+local session is born with tools `mcp__dark-eye__{register,listen,speak,
+introduce,attention,agent_status}`. **Open session registry**: any number
+of sessions; a new session calls `register` (name + optional color; both
+unique, green-band hues refused, roster returned), then `listen` with its
+own name. hub.reg seeds deep=#b04dff / fast=#4dd9ff; 10-color PALETTE,
+hue-spread fallback when exhausted. Unregistered names that appear (routeTo,
+attention) auto-join. MCP listen default is still "fast" — collides with
+the SDK brain if a session skips register. If the WSL gateway IP
+changes after a reboot, refresh with:
+`claude mcp remove --scope user dark-eye && claude mcp add --scope user
+--transport http dark-eye http://<gateway>:8642/mcp --header
+"x-dark-eye-key: <secret>"` (gateway from /proc/net/route, secret from the
+dark-eye config.json).
 
 ## Start / restart
 
@@ -99,13 +117,19 @@ from katakana noise just above the eye (linger 7-22s), **green = the Eye
 only; agents = rainbow orbiters outside it** (cyan/magenta/orange/violet/
 yellow/pink; comet tails; gold burst on done).
 
-## Current live state (2026-08-11 end of session)
+## Current live state (2026-08-11, second checkpoint — pre context-reset)
 
-- Body running; **cloak is DOWN** (visible to recorders for his videos) —
-  raise with `/bridge/cloak {"on":true}` when he's done filming.
-- Deep-brain session connected via Monitor; fast brain stopped by Oscar.
-- Phase A: core loop DONE and confirmed ("working perfectly").
-  Remaining: A3 Show channel (Snap/Paste/Drop + tray), A4 the Call.
+- Body running latest build; cloak is ON (every restart re-enables it; tray
+  has a cloak checkbox for filming).
+- Deep-brain session (violet, "deep") connected via persistent Monitor +
+  bridge; ACTIVE voice channel. Fast brain validated today (both connected
+  simultaneously, he switched by voice, ~2s replies) but its terminal is
+  currently closed — roster shows it silent.
+- Mic: toggle Ctrl+Alt+Space ONLY (tray click removed by his order).
+- Phase A core + improvement round DONE. Remaining: A3 Show channel
+  (Snap/Paste/Drop + tray of glyph-cards), A4 the Call (ring/missed-call —
+  attention tint is its silent half). Open tuning: breathing naturalness.
+- Git: root commit 7246c07 (tag `phosphor-v1`) + checkpoint commit after it.
 
 ## Improvements shipped post-compaction (2026-08-11)
 
@@ -152,8 +176,25 @@ baseline semantics), illumination waves on the lid (makeWave/rimTier, ~1
 in 5 hot), mutation-in-place with 160ms flash, slit tiers 2/3/4, eye body
 renders to offscreen eyeBuf and attention tint is ONE hue-rotate filtered
 composite (no per-glyph recoloring). Iris/orbiters/captions stay fillText.
-Directions 2 (Afterimage) and 3 (Signal Bleed) not yet built — await his
-verdict on 1 first.
+He approved direction 1 after tuning (iris ring 0.62 alpha/12px — he wanted
+it MORE visible; mutation rates quartered, no flash pops — "tickling"
+annoyed him). **Snapshot: git commit 7246c07, tag `phosphor-v1`** (root
+commit of the repo; .gitignore excludes node_modules, body/models, wavs).
+**Direction 2 (Afterimage) SHIPPED 2026-08-11**: trailBuf phosphor memory
+(destination-out decay 0.16, hard wipe 0.4 every 45 frames, feed 0.45,
+ghost composited at 0.55 under crisp present), noise1() pseudo-1/f driving
+luminance breathing (±9% @ ~0.1Hz) + wave speed, micro-saccades (gaze
+fixations ±3px every 1-4s, ease 0.22, tremor) on iris+slit, `exc`
+excitement scalar (~400ms ease) replacing all hard speaking/listening
+ternaries. His verdict on 2: "good idea, can be more natural" → OPEN TUNING ITEM:
+naturalness of breathing/saccades.
+**Direction 3 (Signal Bleed) SHIPPED 2026-08-11, half intensity**:
+quarter-res bloomBuf over the eye region ('lighter' @ 0.3 — cannot reach
+window bounds by construction), chromatic fringe baked into the white-hot
+atlas tier only (±0.7px red/blue), static scanlines clipped inside the
+leaf path (destination-out 0.10 every 3rd row). Animated film grain
+deliberately SKIPPED — would re-trigger his "tickling" complaint.
+All three research directions now live. Awaiting whole-organism verdict.
 
 ## Still open
 

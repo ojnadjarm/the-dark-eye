@@ -67,6 +67,13 @@
       KATA.split('').forEach((ch, ci) => {
         a.save();
         a.translate(ci * CELL, ti * CELL);
+        if (ti === TIERS.length - 1) {
+          // chromatic fringe on the white-hot tier only — broadcast bleed
+          a.fillStyle = 'rgba(255,70,90,0.4)';
+          a.fillText(ch, ORX - 0.7, ORY);
+          a.fillStyle = 'rgba(90,150,255,0.4)';
+          a.fillText(ch, ORX + 0.7, ORY);
+        }
         if (tier.glow) {
           a.shadowColor = tier.glowColor;
           a.shadowBlur = tier.glow;
@@ -174,6 +181,29 @@
   eyeBuf.height = c.height;
   const eg = eyeBuf.getContext('2d');
 
+  // phosphor memory: what the eye just was, decaying toward transparency
+  const trailBuf = document.createElement('canvas');
+  trailBuf.width = c.width;
+  trailBuf.height = c.height;
+  const tg = trailBuf.getContext('2d');
+  let wipeCounter = 0; // periodic hard wipe kills 8-bit alpha residue
+
+  // bloom: quarter-res view of the eye region, blurred and added back — the
+  // buffer is smaller than the eye's neighborhood, so glow physically cannot
+  // reach the window bounds (the old edge-reveal bug's territory)
+  const BLOOM = { x: CX - RX - 20, y: CY - RY - 20, w: (RX + 20) * 2, h: (RY + 20) * 2 };
+  const bloomBuf = document.createElement('canvas');
+  bloomBuf.width = Math.round(BLOOM.w / 4);
+  bloomBuf.height = Math.round(BLOOM.h / 4);
+  const bg = bloomBuf.getContext('2d');
+
+  // cheap 1/f-ish noise: two incommensurate sines, never metronomes
+  const noise1 = (x) => Math.sin(x + 1.7 * Math.sin(x * 0.213)) * 0.6 + Math.sin(x * 0.607 + 2.1) * 0.4;
+  // gaze: micro-saccades — jump to a fixation, snap in, hold with tremor
+  const gaze = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
+  // excitement eases between idle / listening / speaking (no hard switches)
+  let exc = 0;
+
   // -- decode caption --------------------------------------------------------
   let caption = null;
   function layoutCaption(text) {
@@ -270,7 +300,20 @@
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, 340, 380);
     const speaking = Date.now() < speakUntil;
-    const pulse = 1 + Math.sin(t * (speaking ? 6 : 1.1)) * (speaking ? 0.05 : 0.025);
+    exc += ((speaking ? 1 : listening ? 0.55 : 0) - exc) * 0.04; // ~400ms ease
+    const pulse = 1 + Math.sin(t * (1.1 + 5 * exc)) * (0.025 + 0.028 * exc);
+    // the whole eye breathes in luminance, slow and slightly irregular
+    const breathe = 1 - 0.09 * (0.5 + 0.5 * noise1(t * 0.63));
+    // saccade: new fixation point every 1-4s, snappy ease-out, then tremor
+    if (t > gaze.next) {
+      gaze.tx = Math.random() * 6 - 3;
+      gaze.ty = Math.random() * 4 - 2;
+      gaze.next = t + 1 + Math.random() * 3;
+    }
+    gaze.x += (gaze.tx - gaze.x) * 0.22;
+    gaze.y += (gaze.ty - gaze.y) * 0.22;
+    const gx = gaze.x + noise1(t * 2.3) * 0.15;
+    const gy = gaze.y + noise1(t * 2.9 + 5) * 0.12;
 
     // attention: the whole eye leans toward the calling session's color
     const att = [...attentions.values()].pop() || null;
@@ -292,7 +335,7 @@
 
     // waves ride the lid; respawn with fresh character each lap
     for (const w of waves) {
-      w.pos += w.speed * (1 / 60) * (speaking ? 2.4 : 1);
+      w.pos += w.speed * (1 / 60) * (1 + 1.5 * exc) * (1 + 0.25 * noise1(t * 0.5));
       if (w.pos > TAU) {
         const next = makeWave(w.pos - TAU);
         w.speed = next.speed; w.width = next.width; w.hot = next.hot;
@@ -301,7 +344,7 @@
     }
 
     // mutation stays rare — he called the flicker "tickling", annoying
-    const mutP = speaking ? 0.008 : 0.003;
+    const mutP = 0.003 + 0.005 * exc;
 
     // filling: dim glyphs adrift inside the lids
     eg.save();
@@ -323,7 +366,7 @@
 
     // rim — glyphs flowing along the lid lines, lit by traveling waves
     for (const m of rim) {
-      m.a += m.v * (1 / 60) * (speaking ? 2 : 1);
+      m.a += m.v * (1 / 60) * (1 + exc);
       if (Math.random() < mutP) { m.gi = gidx(); m.mut = now; }
       const x = CX + Math.cos(m.a) * RX * pulse;
       const y = CY + lidY(m.a) * pulse + m.j;
@@ -334,34 +377,72 @@
     eg.globalAlpha = 1;
 
     // the slit — tall, vertical, feline, the hottest thing in the eye
-    const slitPulse = 0.75 + 0.25 * Math.sin(t * (speaking ? 5 : 1.1));
+    const slitPulse = 0.75 + 0.25 * Math.sin(t * (1.1 + 4 * exc));
     for (let j = -3; j <= 3; j++) {
       const cell = slit[j + 3];
       if (Math.random() < 0.03) cell.gi = gidx();
-      const tier = j === 0 && speaking ? 4 : Math.abs(j) === 3 ? 2 : 3;
+      const tier = j === 0 && exc > 0.5 ? 4 : Math.abs(j) === 3 ? 2 : 3;
       eg.globalAlpha = slitPulse * (Math.abs(j) === 3 ? 0.5 : 1);
-      blit(eg, cell.gi, tier, CX - 4, CY + j * 11, 13);
+      blit(eg, cell.gi, tier, CX - 4 + gx, CY + j * 11 + gy, 13);
     }
     eg.globalAlpha = 1;
 
     // ---- composite the body; attention tints the whole organism at once
+    // phosphor memory: decay, then feed this frame's light into it
+    tg.setTransform(1, 0, 0, 1, 0, 0);
+    tg.globalCompositeOperation = 'destination-out';
+    tg.fillStyle = 'rgba(0,0,0,' + (++wipeCounter % 45 === 0 ? 0.4 : 0.16) + ')';
+    tg.fillRect(0, 0, trailBuf.width, trailBuf.height);
+    tg.globalCompositeOperation = 'source-over';
+    tg.globalAlpha = 0.45;
+    tg.drawImage(eyeBuf, 0, 0);
+    tg.globalAlpha = 1;
+
     g.save();
     g.setTransform(1, 0, 0, 1, 0, 0);
     if (att) {
       g.filter = 'hue-rotate(' + Math.round(hueOf(hexRGB(att.color)) - GREEN_HUE) + 'deg) saturate(1.15)';
-      g.globalAlpha = attPulse;
     }
+    const bodyAlpha = (att ? attPulse : 1) * breathe;
+    g.globalAlpha = bodyAlpha * 0.55; // the ghost underneath
+    g.drawImage(trailBuf, 0, 0);
+    g.globalAlpha = bodyAlpha; // the crisp present
     g.drawImage(eyeBuf, 0, 0);
     g.restore();
 
+    // bloom: downscale the eye, blur, add back — haze that hugs the glyphs
+    bg.clearRect(0, 0, bloomBuf.width, bloomBuf.height);
+    bg.filter = 'blur(1.2px)';
+    bg.drawImage(
+      eyeBuf,
+      BLOOM.x * dpr, BLOOM.y * dpr, BLOOM.w * dpr, BLOOM.h * dpr,
+      0, 0, bloomBuf.width, bloomBuf.height
+    );
+    bg.filter = 'none';
+    g.save();
+    if (att) g.filter = 'hue-rotate(' + Math.round(hueOf(hexRGB(att.color)) - GREEN_HUE) + 'deg) saturate(1.15)';
+    g.globalCompositeOperation = 'lighter';
+    g.globalAlpha = 0.3 * bodyAlpha;
+    g.drawImage(bloomBuf, BLOOM.x, BLOOM.y, BLOOM.w, BLOOM.h);
+    g.restore();
+
+    // scanlines: faint row shading living only inside the eye — CRT whisper
+    g.save();
+    leafPath(g);
+    g.clip();
+    g.globalCompositeOperation = 'destination-out';
+    g.fillStyle = 'rgba(0,0,0,0.10)';
+    for (let sy = CY - RY; sy < CY + RY; sy += 3) g.fillRect(CX - RX, sy, RX * 2, 1);
+    g.restore();
+
     // iris — session-colored, slowly turning (few glyphs: direct text is fine)
-    irisRot += (1 / 60) * (speaking ? 0.9 : 0.22);
+    irisRot += (1 / 60) * (0.22 + 0.7 * exc);
     const IRIS_RX = 21, IRIS_RY = 34;
     for (const p of irisFill) {
       p.a += p.v * (1 / 60);
       if (Math.random() < 0.004) p.ch = kata();
-      const x = CX + Math.cos(p.a) * IRIS_RX * p.r;
-      const y = CY + Math.sin(p.a) * IRIS_RY * p.r;
+      const x = CX + gx + Math.cos(p.a) * IRIS_RX * p.r;
+      const y = CY + gy + Math.sin(p.a) * IRIS_RY * p.r;
       g.font = '10px ' + GLYPH_FONT;
       g.fillStyle = irisCol(p.o);
       g.fillText(p.ch, x, y);
@@ -369,8 +450,8 @@
     for (const p of iris) {
       if (Math.random() < 0.005) p.ch = kata();
       const a = irisRot + (p.i / 14) * TAU;
-      const x = CX + Math.cos(a) * IRIS_RX;
-      const y = CY + Math.sin(a) * IRIS_RY;
+      const x = CX + gx + Math.cos(a) * IRIS_RX;
+      const y = CY + gy + Math.sin(a) * IRIS_RY;
       g.font = '12px ' + GLYPH_FONT;
       g.fillStyle = irisCol(0.62 + (speaking ? 0.2 : 0));
       g.fillText(p.ch, x, y);

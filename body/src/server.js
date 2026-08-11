@@ -11,8 +11,27 @@ const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StreamableHTTPServerTransport } = require("@modelcontextprotocol/sdk/server/streamableHttp.js");
 const { z } = require("zod");
 
-function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, hub }) {
+function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub }) {
   const mcp = new McpServer({ name: "dark-eye-body", version: "0.1.0" });
+
+  mcp.registerTool(
+    "register",
+    {
+      description:
+        "Join the Eye as a session. Pick a short name and optionally a hex color; both must " +
+        "be unique (green belongs to the Eye — it will be refused). Returns your final " +
+        "name/color and the full roster of sessions. Call this FIRST, then listen with your name.",
+      inputSchema: {
+        name: z.string().describe("Your session name, e.g. 'research' — lowercase, short"),
+        color: z.string().optional().describe("Preferred hex color like '#ff9a4d'; auto-assigned if taken/omitted"),
+        brief: z.string().optional().describe("One line: what this session is doing"),
+      },
+    },
+    async ({ name, color, brief }) => {
+      const r = await onRegister({ name, color, brief });
+      return { content: [{ type: "text", text: JSON.stringify(r) }] };
+    }
+  );
 
   mcp.registerTool(
     "listen",
@@ -23,7 +42,7 @@ function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, hub }) {
         "your session is the active voice channel (he says 'switch to <session>').",
       inputSchema: {
         timeoutMs: z.number().optional(),
-        session: z.string().optional().describe("Session name to listen as (default 'fast')"),
+        session: z.string().optional().describe("Your registered session name (default 'fast' — register first and pass your own)"),
       },
     },
     async ({ timeoutMs, session }) => {
@@ -119,7 +138,7 @@ function readBody(req) {
   });
 }
 
-function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, onActive, onIntroduce, hub, log }) {
+function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, onActive, onIntroduce, onRegister, hub, log }) {
   const server = http.createServer(async (req, res) => {
     if (secret && req.headers["x-dark-eye-key"] !== secret) {
       res.writeHead(401).end();
@@ -186,6 +205,21 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
       }
       return;
     }
+    if (req.url === "/bridge/register" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const r = await onRegister({
+          name: body?.name,
+          color: body?.color,
+          brief: body?.brief ? String(body.brief) : undefined,
+        });
+        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(r));
+      } catch (err) {
+        log(`bridge register error: ${err.message}`);
+        if (!res.headersSent) res.writeHead(500).end();
+      }
+      return;
+    }
     if (req.url === "/bridge/introduce" && req.method === "POST") {
       try {
         const body = await readBody(req);
@@ -212,7 +246,7 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
     }
     if (req.url === "/bridge/sessions" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" }).end(
-        JSON.stringify({ active: hub.active, sessions: hub.names() })
+        JSON.stringify({ active: hub.active, sessions: hub.roster() })
       );
       return;
     }
@@ -227,7 +261,7 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
     try {
       const body = await readBody(req);
       // Stateless: fresh server+transport per request.
-      const mcp = buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, hub });
+      const mcp = buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close();

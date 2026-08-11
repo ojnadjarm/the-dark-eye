@@ -43,16 +43,79 @@ function makeBus() {
   };
 }
 
+// palette a session gets if it doesn't pick a color — no greens, green is the Eye
+const PALETTE = [
+  "#b04dff", "#4dd9ff", "#ff9a4d", "#ffe14d", "#ff4d88",
+  "#ff4dd9", "#4d6bff", "#ff6b4d", "#9db4ff", "#ffb84d",
+];
+function hueOfHex(hex) {
+  const [r, g2, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+  const mx = Math.max(r, g2, b), mn = Math.min(r, g2, b), d = mx - mn;
+  if (!d) return 0;
+  let h;
+  if (mx === r) h = ((g2 - b) / d) % 6;
+  else if (mx === g2) h = (b - r) / d + 2;
+  else h = (r - g2) / d + 4;
+  return (h * 60 + 360) % 360;
+}
+const GREEN_HUE = 152; // the Eye's identity — sessions may not wear it
+
 const hub = {
   buses: new Map(),
-  meta: new Map(), // name → { lastSeen } — updated on every listen call
+  meta: new Map(), // name → { lastSeen, brief } — updated on every listen call
+  reg: new Map([["deep", { color: "#b04dff" }], ["fast", { color: "#4dd9ff" }]]),
   active: "deep",
   bus(name) {
     if (!this.buses.has(name)) this.buses.set(name, makeBus());
     return this.buses.get(name);
   },
   names() {
-    return [...new Set([...this.buses.keys(), "deep", "fast"])];
+    return [...new Set([...this.reg.keys(), ...this.buses.keys()])];
+  },
+  // any session may join: unique name, unique non-green color
+  register(name, color) {
+    const clean = String(name ?? "").toLowerCase().trim().replace(/[^a-z0-9-]/g, "").slice(0, 16);
+    if (!clean) return { error: "invalid name — use letters, digits, dashes" };
+    const existing = this.reg.get(clean);
+    const used = new Set(
+      [...this.reg.entries()].filter(([n]) => n !== clean).map(([, r]) => r.color)
+    );
+    let chosen = null;
+    let colorNote;
+    if (color != null) {
+      const want = String(color).toLowerCase();
+      if (!/^#[0-9a-f]{6}$/.test(want)) colorNote = "invalid color format, auto-assigned";
+      else if (Math.abs(hueOfHex(want) - GREEN_HUE) < 30) colorNote = "green belongs to the Eye, auto-assigned";
+      else if (used.has(want)) colorNote = "color already taken, auto-assigned";
+      else chosen = want;
+    }
+    if (!chosen) chosen = existing?.color && !used.has(existing.color) ? existing.color : null;
+    if (!chosen) chosen = PALETTE.find((p) => !used.has(p)) ?? null;
+    if (!chosen) {
+      // palette exhausted — spread hues, skipping the Eye's green band
+      let h = (this.reg.size * 47) % 360;
+      if (Math.abs(h - GREEN_HUE) < 30) h = (h + 60) % 360;
+      chosen = `hsl-${h}`; // placeholder replaced below
+      const f = (n) => {
+        const k = (n + h / 30) % 12;
+        return Math.round(255 * (0.65 - 0.35 * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+      };
+      chosen = "#" + [f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, "0")).join("");
+    }
+    this.reg.set(clean, { color: chosen });
+    return { name: clean, color: chosen, ...(colorNote ? { note: colorNote } : {}) };
+  },
+  roster() {
+    const now = Date.now();
+    return this.names().map((name) => ({
+      name,
+      color: this.reg.get(name)?.color ?? null,
+      connected:
+        (this.buses.get(name)?.waiters.length ?? 0) > 0 ||
+        now - (this.meta.get(name)?.lastSeen ?? 0) < 90_000,
+      active: this.active === name,
+      brief: this.meta.get(name)?.brief ?? null,
+    }));
   },
   onConnect: null, // set once the Eye exists; fires the first time a session listens
   touch(name) {
@@ -62,33 +125,18 @@ const hub = {
   },
   setBrief(name, brief) {
     const known = this.meta.get(name);
-    this.meta.set(name, { lastSeen: known?.lastSeen ?? Date.now(), brief });
-  },
-  // connected = a brain is long-polling right now, or has within 90s
-  info() {
-    const now = Date.now();
-    return this.names().map((name) => ({
-      name,
-      connected:
-        (this.buses.get(name)?.waiters.length ?? 0) > 0 ||
-        now - (this.meta.get(name)?.lastSeen ?? 0) < 90_000,
-    }));
+    // a brief alone is not a heartbeat — only listen() proves connection
+    this.meta.set(name, { lastSeen: known?.lastSeen ?? 0, brief });
   },
   push(t) {
     this.bus(this.active).push(t);
   },
 };
 
-// session identity colors — never green, green is the Eye itself
-const SESSION_COLORS = { deep: "#b04dff", fast: "#4dd9ff" };
-const EXTRA_COLORS = ["#ff9a4d", "#ffe14d", "#ff4d88", "#ff4dd9"];
-const assignedColors = new Map();
-let extraColorI = 0;
+// a session's color always comes from the registry; unknown names auto-join
 function sessionColor(name) {
-  if (SESSION_COLORS[name]) return SESSION_COLORS[name];
-  if (!assignedColors.has(name))
-    assignedColors.set(name, EXTRA_COLORS[extraColorI++ % EXTRA_COLORS.length]);
-  return assignedColors.get(name);
+  if (!hub.reg.has(name)) hub.register(name);
+  return hub.reg.get(name)?.color ?? "#9db4ff";
 }
 
 const EYE_W = 340;
@@ -226,7 +274,6 @@ function startVoice(cfg) {
 // close and send. Failsafe closes a forgotten mic after 90s (the clip still
 // gets transcribed). The listening rings on the Eye show the mic is open.
 const MIC_MAX_MS = 90_000;
-let micToggle = null; // set by startPtt; the tray shares it
 let hook = null;
 function startPtt() {
   const { uIOhook, UiohookKey } = require("uiohook-napi");
@@ -244,7 +291,6 @@ function startPtt() {
         setMic(false);
       }, MIC_MAX_MS);
   };
-  micToggle = () => setMic(!open);
   uIOhook.on("keydown", (e) => {
     if (e.keycode === UiohookKey.Space && e.ctrlKey && e.altKey && !pressed) {
       pressed = true;
@@ -275,7 +321,7 @@ function startTray() {
   const { dotPng } = require("./png");
   const icon = nativeImage.createFromPath(path.join(__dirname, "..", "assets", "tray.png"));
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
-  tray.on("click", () => micToggle?.());
+  // no click action: the mic answers ONLY to the key shortcut (his rule)
   const dots = new Map(); // "<color>:<filled>" → nativeImage
   const dot = (color, filled) => {
     const key = `${color}:${filled}`;
@@ -283,24 +329,21 @@ function startTray() {
     return dots.get(key);
   };
   const rebuild = () => {
-    const sessions = hub.info();
+    const sessions = hub.roster();
     tray.setToolTip(`The Dark Eye — voice: ${hub.active}`);
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: "Voice channel", enabled: false },
-        ...sessions.map((s) => {
-          const brief = hub.meta.get(s.name)?.brief;
-          return {
-            label:
-              s.name +
-              (hub.active === s.name ? "  ⟨voice⟩" : "") +
-              (brief ? `  ·  ${brief.slice(0, 44)}` : ""),
-            icon: dot(sessionColor(s.name), s.connected),
-            click: () => routeTo(s.name),
-          };
-        }),
+        ...sessions.map((s) => ({
+          label:
+            s.name +
+            (s.active ? "  ⟨voice⟩" : "") +
+            (s.brief ? `  ·  ${s.brief.slice(0, 44)}` : ""),
+          icon: dot(s.color ?? sessionColor(s.name), s.connected),
+          click: () => routeTo(s.name),
+        })),
         { type: "separator" },
-        { label: "Toggle mic  (Ctrl+Alt+Space)", click: () => micToggle?.() },
+        { label: "Mic: Ctrl+Alt+Space (tap to open / tap to send)", enabled: false },
         {
           label: "Cloaked from capture",
           type: "checkbox",
@@ -365,6 +408,14 @@ app.whenReady().then(() => {
       log(`introduce: ${session} — ${brief}`);
       hub.setBrief(session, brief);
       whisper(`⟨ ${session} ⟩ ${brief}`);
+    },
+    onRegister: async ({ name, color, brief }) => {
+      const r = hub.register(name, color);
+      if (r.error) return r;
+      if (brief) hub.setBrief(r.name, brief);
+      log(`register: ${r.name} ${r.color}${r.note ? ` (${r.note})` : ""}`);
+      whisper(`⟨ ${r.name} ⟩ joined${brief ? " · " + brief : ""}`);
+      return { ...r, active: hub.active, sessions: hub.roster() };
     },
   });
 });
