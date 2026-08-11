@@ -43,8 +43,12 @@ Host from WSL: default gateway, currently `172.18.192.1` (read
 
 ```
 POST /bridge/speak     {"text": "..."}                      → Eye speaks it (Kokoro) + decode caption
-GET  /bridge/listen?timeoutMs=50000&session=deep            → long-poll; {"transcript": "..."|null}
+GET  /bridge/listen?timeoutMs=50000&session=deep            → long-poll; {"transcript": "..."|null} — or a body
+                                                              event instead: {"transcript":null,"event":"channel-open"
+                                                              |"canvas-approved"|"canvas-rejected","detail":"..."}
                                                               (session default "deep"; MCP listen defaults "fast")
+POST /bridge/show      {"session","title","kind":"html|image|text","data"} → visual onto the canvas gallery
+                                                              (images = data: URL in "data"; body cap ~32MB)
 POST /bridge/status    {"id","state":"working|done|error","label"} → colored orbiter around the eye
 POST /bridge/cloak     {"on": true|false}                   → hide/show from screen recorders
 POST /bridge/attention {"session","on":true|false,"label"}  → eye tints/pulses in that session's color
@@ -230,10 +234,42 @@ leaf path (destination-out 0.10 every 3rd row). Animated film grain
 deliberately SKIPPED — would re-trigger his "tickling" complaint.
 All three research directions now live. Awaiting whole-organism verdict.
 
+## Canvas + call waiting (2026-08-11, designed by his voice, shipped)
+
+His two laws, verbatim intent: several agents wanting him must **queue**
+("put them on wait until I change the channel"), and a visual must **never
+interrupt his screen** ("I'm watching my video... it's going to be approved
+manually").
+
+1. **Call waiting** — `attention on` now joins an ordered hold queue
+   (main.js `waiting`). The FRONT caller gets the shipped eye-tint look;
+   everyone behind renders as small colored glyph marks docked left of the
+   eye (+ a "⟨name⟩ waiting" whisper on arrival). Switching to a held
+   session (voice or tray) dequeues it, speaks the held reason, and pushes
+   `{event:"channel-open",detail:why}` onto that session's bus so the agent
+   knows to re-ask. Voice: "who's waiting" → spoken list of calls + canvas.
+2. **The canvas** — a hidden frameless dark window (`src/canvas/`), cloaks
+   with the Eye. Sessions push visuals: `eye.sh show <name> <title> <file|->`
+   (html/image/text; images ride as data: URLs) or MCP tool `show` →
+   gallery (max 12, oldest dropped, logged). NEVER opens by itself: pending
+   items = framed dock marks + whisper. He opens with **"show me" / "open
+   canvas"** (full-utterance match only, so dictation passes through) or
+   tray "Canvas — N waiting". Approve / Reject buttons return
+   `{event:"canvas-approved|rejected",detail:title}` to the owner's bus;
+   Later/✕ just hides, items stay. One exception to manual-open: content
+   from the ACTIVE session renders directly if the canvas is ALREADY
+   visible (he's looking at it — not an interruption).
+3. **Bus events** — buses now carry strings (transcripts) or event objects;
+   bridge listen returns `{"event":...,"detail":...}`, MCP listen renders
+   `[event: ...]`, `eye.sh` emits `EVENT:` lines (VOICE: unchanged).
+   `bridge/SKILL.md` updated + reinstalled (channel-open = "speak your held
+   question now"; canvas verdicts = act on them).
+
 ## Still open
 
 - Future: live-session watching (show his browsing while thinking aloud) —
   spec'd as later opt-in phase. Matrix field (Phase B) quality bar: "really
   really good."
-- A3 Show channel, A4 the Call (ring/missed-call sounds — attention tint is
-  the silent half of it).
+- A3 Show channel (Snap/Paste/Drop capture gestures — the Oscar→Eye
+  direction; the canvas above is the Eye→Oscar direction), A4 the Call
+  ring/missed-call sounds (the hold queue is now its silent half).

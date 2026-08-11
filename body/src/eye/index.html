@@ -169,7 +169,10 @@
   }
   const GREEN_HUE = hueOf(GREEN);
   let eyeRGB = [...GREEN];        // lerps toward a calling session's color
-  const attentions = new Map();   // session → {label, color}
+  // the dock: calls on hold + visuals pending on the canvas. front = the
+  // caller first in line — the only one allowed to tint the whole eye
+  let dock = { marks: [], front: null };
+  const markGlyphs = new Map();   // "session:kind" → glyph, stable per mark
   let sessionTag = { name: 'deep', color: '#b04dff' };
   // the iris wears the active session's color — that IS the channel indicator
   let irisRGB = hexRGB(sessionTag.color);
@@ -315,8 +318,9 @@
     const gx = gaze.x + noise1(t * 2.3) * 0.15;
     const gy = gaze.y + noise1(t * 2.9 + 5) * 0.12;
 
-    // attention: the whole eye leans toward the calling session's color
-    const att = [...attentions.values()].pop() || null;
+    // attention: the whole eye leans toward the FRONT caller's color; the
+    // rest of the queue waits as docked marks, stealing nothing
+    const att = dock.front;
     const tgtRGB = att ? hexRGB(att.color) : GREEN;
     for (let i = 0; i < 3; i++) eyeRGB[i] += (tgtRGB[i] - eyeRGB[i]) * 0.05;
     const attPulse = att ? 0.72 + 0.28 * Math.sin(t * 3.4) : 1;
@@ -489,6 +493,25 @@
       oi++;
     }
 
+    // the dock: held calls (bare glyph, slow pulse) and pending visuals
+    // (glyph in a thin card frame) stacked on the left, out of the eye's way
+    dock.marks.slice(0, 8).forEach((m, i) => {
+      const key = m.session + ':' + m.kind;
+      if (!markGlyphs.has(key)) markGlyphs.set(key, kata());
+      if (Math.random() < 0.004) markGlyphs.set(key, kata());
+      const x = 22, y = CY + 20 - i * 24;
+      const [mr, mg, mb] = hexRGB(m.color || '#9db4ff');
+      const a = 0.55 + 0.3 * Math.sin(t * 1.8 + i * 1.3);
+      g.font = '13px ' + GLYPH_FONT;
+      g.fillStyle = 'rgba(' + mr + ',' + mg + ',' + mb + ',' + a + ')';
+      g.fillText(markGlyphs.get(key), x, y);
+      if (m.kind === 'show') {
+        g.strokeStyle = 'rgba(' + mr + ',' + mg + ',' + mb + ',' + a * 0.8 + ')';
+        g.lineWidth = 1;
+        g.strokeRect(x - 5, y - 13, 18, 18);
+      }
+    });
+
     // listening: quiet expanding rings — the Eye leans in
     if (listening) {
       const k = (t % 1.1) / 1.1;
@@ -595,9 +618,11 @@
   window.eye.onHeard((text) => { heard = { text, until: Date.now() + 4500 }; });
 
   window.eye.onSession((s) => { sessionTag = { name: s.active, color: s.color }; });
-  window.eye.onAttention((a) => {
-    if (a.on) attentions.set(a.session, a);
-    else attentions.delete(a.session);
+  window.eye.onDock((d) => {
+    dock = d;
+    // forget glyphs of marks that left, so a returning mark rerolls fresh
+    const live = new Set(d.marks.map((m) => m.session + ':' + m.kind));
+    for (const k of markGlyphs.keys()) if (!live.has(k)) markGlyphs.delete(k);
   });
 
   // -- the voice: gapless playback of streamed sentence chunks ---------------

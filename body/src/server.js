@@ -1,10 +1,12 @@
 /**
  * The body's MCP server — the contract any brain speaks (spec §8).
  * Stateless streamable HTTP on :8642, guarded by a shared secret header.
- * MCP tools: listen, speak, agent_status, attention (default session "fast").
- * Plain-HTTP bridge: speak/listen/status/cloak/attention/active/sessions
- * (listen defaults to session "deep"). Oscar routes his voice between
- * sessions by saying "switch to <name>" — handled in main.js, not here.
+ * MCP tools: listen, speak, agent_status, attention, show (default session
+ * "fast"). Plain-HTTP bridge: speak/listen/status/cloak/attention/active/
+ * show/sessions (listen defaults to session "deep"). Oscar routes his voice
+ * between sessions by saying "switch to <name>" — handled in main.js, not
+ * here. listen can also deliver body events (channel-open, canvas-approved,
+ * canvas-rejected) instead of a transcript.
  */
 const http = require("node:http");
 const os = require("node:os");
@@ -25,7 +27,17 @@ function wslAdapterAddress() {
   return null;
 }
 
-function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub }) {
+// a bus item is either Oscar's words (string) or a body event (object) —
+// e.g. channel-open when he answers a held call, canvas-approved/rejected
+// when he judges a visual
+const asBridgePayload = (t) =>
+  t && typeof t === "object"
+    ? { transcript: null, event: t.event, detail: t.detail ?? "" }
+    : { transcript: t };
+const asMcpText = (t) =>
+  t && typeof t === "object" ? `[event: ${t.event}${t.detail ? " — " + t.detail : ""}]` : t ?? "";
+
+function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, onShow, hub }) {
   const mcp = new McpServer({ name: "dark-eye-body", version: "0.1.0" });
 
   mcp.registerTool(
@@ -62,7 +74,7 @@ function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub
     async ({ timeoutMs, session }) => {
       hub.touch(session || "fast");
       const t = await hub.bus(session || "fast").take(Math.min(timeoutMs ?? 50000, 55000));
-      return { content: [{ type: "text", text: t ?? "" }] };
+      return { content: [{ type: "text", text: asMcpText(t) }] };
     }
   );
 
@@ -85,12 +97,34 @@ function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub
   );
 
   mcp.registerTool(
+    "show",
+    {
+      description:
+        "Put something visual on Oscar's canvas — a mockup, a graph, a page. It NEVER opens " +
+        "by itself: he gets a silent pending mark by the eye and opens the canvas when he " +
+        "wants. His verdict comes back on your listen channel as [event: canvas-approved] " +
+        "or [event: canvas-rejected].",
+      inputSchema: {
+        title: z.string().describe("Short human title, e.g. 'login mockup v2'"),
+        data: z.string().describe("The content itself: full HTML, plain text, or a data: URL for an image"),
+        kind: z.enum(["html", "image", "text"]).optional().describe("Default 'html'"),
+        session: z.string().optional().describe("Your registered session name (default 'fast')"),
+      },
+    },
+    async ({ title, data, kind, session }) => {
+      const r = await onShow({ session: session || "fast", title, kind: kind || "html", data });
+      return { content: [{ type: "text", text: JSON.stringify(r) }] };
+    }
+  );
+
+  mcp.registerTool(
     "attention",
     {
       description:
-        "Ask for Oscar's attention without speaking: the Eye tints to your session color " +
-        "until he switches to you or you clear it. Use when you need his input but he may " +
-        "be away or busy — never speak unprompted.",
+        "Ask for Oscar's attention without speaking: you join the hold queue — the Eye tints " +
+        "to your color when you reach the front, until he switches to you or you clear it. " +
+        "When he answers, your listen channel gets [event: channel-open]. Use when you need " +
+        "his input but he may be away or busy — never speak unprompted.",
       inputSchema: {
         on: z.boolean(),
         label: z.string().optional().describe("Short reason, e.g. 'needs approval'"),
@@ -137,10 +171,18 @@ function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub
   return mcp;
 }
 
+const BODY_MAX = 33_000_000; // ~32MB — inline base64 images fit, runaways don't
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
-    req.on("data", (c) => (data += c));
+    req.on("data", (c) => {
+      data += c;
+      if (data.length > BODY_MAX) {
+        req.destroy();
+        reject(new Error("body too large"));
+      }
+    });
     req.on("end", () => {
       try {
         resolve(data ? JSON.parse(data) : undefined);
@@ -152,7 +194,7 @@ function readBody(req) {
   });
 }
 
-function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, onActive, onIntroduce, onRegister, hub, log }) {
+function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, onActive, onIntroduce, onRegister, onShow, hub, log }) {
   if (!secret) throw new Error("refusing to serve without a secret — check config.json");
   const secretBuf = Buffer.from(secret);
   const authed = (req) => {
@@ -210,7 +252,28 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
       const session = u.searchParams.get("session") || "deep";
       hub.touch(session);
       const t = await hub.bus(session).take(ms);
-      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ transcript: t }));
+      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(asBridgePayload(t)));
+      return;
+    }
+    if (req.url === "/bridge/show" && req.method === "POST") {
+      try {
+        const body = await readBody(req);
+        const data = String(body?.data ?? "");
+        if (!data) {
+          res.writeHead(400, { "Content-Type": "application/json" }).end('{"error":"no data"}');
+          return;
+        }
+        const r = await onShow({
+          session: String(body?.session ?? "deep"),
+          title: String(body?.title ?? ""),
+          kind: ["html", "image", "text"].includes(body?.kind) ? body.kind : "html",
+          data,
+        });
+        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(r));
+      } catch (err) {
+        log(`bridge show error: ${err.message}`);
+        if (!res.headersSent) res.writeHead(500).end();
+      }
       return;
     }
     if (req.url === "/bridge/attention" && req.method === "POST") {
@@ -284,7 +347,7 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
     try {
       const body = await readBody(req);
       // Stateless: fresh server+transport per request.
-      const mcp = buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub });
+      const mcp = buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, onShow, hub });
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         transport.close();

@@ -66,6 +66,15 @@ session** (the hub only delivers voice routed to your name). Treat it as real
 user input and answer it. `EYE OFFLINE` / `EYE BACK` events report bridge
 health — no action needed beyond telling Oscar if it stays offline.
 
+The monitor also emits `EVENT: ...` lines — notices from the body, not
+Oscar's words:
+
+- `EVENT: channel-open — <why>` — Oscar just answered your held attention
+  call and your session now has his voice. Speak your question now (this is
+  the one case where speaking first is right — he switched TO you for it).
+- `EVENT: canvas-approved — <title>` / `EVENT: canvas-rejected — <title>` —
+  his verdict on a visual you put on the canvas. Act on it.
+
 ## 5. Confirm
 
 Tell Oscar in the terminal that the session is connected and under which name
@@ -86,11 +95,30 @@ on the Eye.
   things that must be read (code, paths, links, tables) or when Oscar asks.
 - **Never speak unprompted.** The Eye never talks unless Oscar asked
   something. To get his attention silently:
-  `eye.sh attention <name> on "<why>"` (the eye tints your color until he
-  switches to you), `eye.sh attention <name> off` to clear.
+  `eye.sh attention <name> on "<why>"` — you join the hold queue; the eye
+  tints your color when you reach the front, and when Oscar switches to you
+  your monitor gets `EVENT: channel-open`. `eye.sh attention <name> off`
+  leaves the queue.
 - During long work, fire `eye.sh status <task-id> working "<label>"` and
   finish with `eye.sh status <task-id> done "<label>"` — these render as
   colored orbiters around the eye, keeping it honest about who's busy.
+
+## Showing visuals — the canvas
+
+When Oscar asks for a mockup, a graph, a page — anything visual — write it
+to a file (self-contained HTML, an image, or plain text) and push it:
+
+    /home/onadjar/projects/the-dark-eye/bridge/eye.sh show <name> "<short title>" <file>
+
+(`-` instead of a file reads HTML from stdin.) The canvas **never opens by
+itself** — Oscar's hard rule. He gets a silent pending mark by the eye and a
+whispered caption; he opens it when he wants by saying "show me" or from the
+tray. His verdict arrives on your monitor as `EVENT: canvas-approved` /
+`EVENT: canvas-rejected`. After pushing, say (or print) one short line that
+it's on the canvas — never nag him to open it.
+
+Canvas HTML is rendered in a sandboxed frame with no network access — keep
+it self-contained: inline CSS/JS, images as data: URIs.
 
 ## Reference
 

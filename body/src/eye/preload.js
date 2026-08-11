@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld("eye", {
   onPtt: (fn) => ipcRenderer.on("ptt", (_e, down) => fn(down)),
   onHeard: (fn) => ipcRenderer.on("heard", (_e, text) => fn(text)),
   onSession: (fn) => ipcRenderer.on("session", (_e, s) => fn(s)),
-  onAttention: (fn) => ipcRenderer.on("attention", (_e, a) => fn(a)),
+  onDock: (fn) => ipcRenderer.on("dock", (_e, d) => fn(d)),
   sendMic: (payload) => ipcRenderer.send("mic-audio", payload),
   debug: (m) => ipcRenderer.send("debug", m),
 });

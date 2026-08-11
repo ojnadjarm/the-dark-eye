@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- agent content renders ONLY inside the sandboxed iframe below; this page
+     itself runs no remote code -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; frame-src data: about:">
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: #050807; color: #9fffc8;
+    font: 13px Consolas, monospace;
+  }
+  #chrome {
+    display: flex; align-items: center; gap: 10px;
+    height: 38px; padding: 0 12px;
+    background: #070c0a; border-bottom: 1px solid #143826;
+    -webkit-app-region: drag; user-select: none;
+  }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: #4dffa0; flex: none; }
+  #who { color: #6fdca4; flex: none; }
+  #title { color: #eafff2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #queue { color: #2f9e63; flex: none; margin-left: auto; }
+  #chrome button {
+    -webkit-app-region: no-drag; flex: none;
+    background: transparent; color: inherit; font: inherit;
+    border: 1px solid #1a5438; border-radius: 3px;
+    padding: 4px 12px; cursor: pointer;
+  }
+  #chrome button:hover { background: #0c1f15; }
+  #approve { color: #ffd166; border-color: #6b5624; }
+  #approve:hover { background: #241d0a; }
+  #reject { color: #ff3b4d; border-color: #6b1c24; }
+  #reject:hover { background: #240a0d; }
+  #close { border: none; padding: 4px 8px; color: #4a7a5e; }
+  #stage { position: absolute; inset: 38px 0 0 0; }
+  #stage iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+  #stage img { max-width: 100%; max-height: 100%; display: block; margin: 0 auto; object-fit: contain; }
+  #stage pre {
+    margin: 0; padding: 20px; height: 100%; box-sizing: border-box;
+    overflow: auto; white-space: pre-wrap; color: #9fffc8;
+  }
+  #empty {
+    position: absolute; inset: 38px 0 0 0;
+    display: flex; align-items: center; justify-content: center;
+    color: #2f9e63; letter-spacing: 0.2em;
+  }
+</style>
+</head>
+<body>
+<div id="chrome">
+  <div id="dot"></div>
+  <span id="who"></span>
+  <span id="title"></span>
+  <span id="queue"></span>
+  <button id="approve">approve</button>
+  <button id="reject">reject</button>
+  <button id="later">later</button>
+  <button id="close">✕</button>
+</div>
+<div id="stage"></div>
+<div id="empty">⟨ nothing on the canvas ⟩</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let current = null;
+
+  function render(item) {
+    current = item;
+    const stage = $('stage');
+    stage.textContent = '';
+    if (!item) {
+      $('empty').style.display = 'flex';
+      $('who').textContent = '';
+      $('title').textContent = '';
+      $('queue').textContent = '';
+      $('dot').style.background = '#4dffa0';
+      for (const b of ['approve', 'reject', 'later']) $(b).style.display = 'none';
+      return;
+    }
+    $('empty').style.display = 'none';
+    $('dot').style.background = item.color || '#9db4ff';
+    $('who').textContent = '⟨ ' + item.session + ' ⟩';
+    $('title').textContent = item.title;
+    $('queue').textContent = item.queued > 1 ? item.queued - 1 + ' more waiting' : '';
+    for (const b of ['approve', 'reject', 'later']) $(b).style.display = '';
+    if (item.kind === 'image') {
+      const img = document.createElement('img');
+      img.src = item.data;
+      stage.appendChild(img);
+    } else if (item.kind === 'html') {
+      const f = document.createElement('iframe');
+      // scripts may run, but in a unique origin with no bridge to anything
+      f.setAttribute('sandbox', 'allow-scripts');
+      f.srcdoc = item.data;
+      stage.appendChild(f);
+    } else {
+      const pre = document.createElement('pre');
+      pre.textContent = item.data;
+      stage.appendChild(pre);
+    }
+  }
+
+  $('approve').onclick = () => current && window.canvasApi.verdict(current.id, 'approved');
+  $('reject').onclick = () => current && window.canvasApi.verdict(current.id, 'rejected');
+  $('later').onclick = () => window.canvasApi.close();
+  $('close').onclick = () => window.canvasApi.close();
+  window.canvasApi.onItem(render);
+  render(null);
+</script>
+</body>
+</html>

@@ -17,10 +17,17 @@ usage: eye.sh <command> [args]
   register <name> [brief]               join the roster (hub assigns a color)
   introduce <name> <brief...>           set the one-line brief shown in the tray
   speak <text...>                       the Eye says it out loud (+ caption)
-  listen <name> [timeoutMs]             one long-poll; prints the transcript, if any
+  listen <name> [timeoutMs]             one long-poll; prints "VOICE:/EVENT: ..." if any
   listen-loop <name>                    infinite poll; emits "VOICE: ..." lines
+                                        (and "EVENT: ..." body events — channel-open
+                                        when Oscar answers your held call,
+                                        canvas-approved/rejected verdicts)
+  show <name> <title> <file|->          put a visual on Oscar's canvas (html, image,
+                                        or text file; '-' reads HTML from stdin).
+                                        Never opens by itself — he gets a pending
+                                        mark by the eye and opens it when he wants
   status <id> <working|done|error> <label...>   orbiter around the eye
-  attention <name> <on|off> [label...]  tint/pulse the eye in your color
+  attention <name> <on|off> [label...]  join/leave the hold queue for his attention
   active <name>                         route Oscar's voice to <name> (silent)
   cloak <on|off>                        hide from / show to screen recorders
 EOF
@@ -65,14 +72,26 @@ for k, v in zip(keys, sys.argv[2:]):
 print(json.dumps(out))' "$@"
 }
 
-extract_transcript() {
+extract_line() { # loop payload → one "VOICE: ..." or "EVENT: ..." line (or nothing)
   python3 -c '
 import sys, json
 try:
-    t = json.load(sys.stdin).get("transcript")
+    d = json.load(sys.stdin)
 except Exception:
-    t = None
-sys.stdout.write(t or "")'
+    d = {}
+t, e = d.get("transcript"), d.get("event")
+if t:
+    print("VOICE: " + t)
+elif e:
+    detail = d.get("detail") or ""
+    print("EVENT: " + e + (" — " + detail if detail else ""))'
+}
+
+api_file() { # api_file <METHOD> <path> <json-file> — big bodies bypass argv limits
+  local method=$1 path=$2 file=$3
+  curl -sf -m "${EYE_CURL_TIMEOUT:-60}" -X "$method" \
+    -H @<(printf 'x-dark-eye-key: %s\n' "$SECRET") -H "Content-Type: application/json" \
+    --data-binary @"$file" "$BASE$path" || die "no response from the Eye at $BASE (down? bad key?)"
 }
 
 cmd=${1:-help}
@@ -105,8 +124,7 @@ case "$cmd" in
     checkname "$name"
     [[ "$t" =~ ^[0-9]+$ ]] || die "timeoutMs must be a number, got '$t'"
     EYE_CURL_TIMEOUT=$(( t / 1000 + 10 )) api GET "/bridge/listen?timeoutMs=$t&session=$name" \
-      | extract_transcript
-    echo ;;
+      | extract_line ;;
   listen-loop)
     name=${1:?usage: eye.sh listen-loop <name>}
     checkname "$name"
@@ -115,14 +133,49 @@ case "$cmd" in
       r=$(EYE_CURL_TIMEOUT=60 api GET "/bridge/listen?timeoutMs=50000&session=$name" 2>/dev/null || true)
       if [ -n "$r" ]; then
         [ "$state" = down ] && { echo "EYE BACK (bridge reachable again)"; state=up; }
-        t=$(printf '%s' "$r" | extract_transcript)
-        [ -n "$t" ] && echo "VOICE: $t"
+        line=$(printf '%s' "$r" | extract_line)
+        [ -n "$line" ] && echo "$line"
       else
         [ "$state" = up ] && { echo "EYE OFFLINE (bridge unreachable)"; state=down; }
         sleep 5
       fi
       sleep 0.2
     done ;;
+  show)
+    name=${1:?usage: eye.sh show <name> <title> <file|->}
+    title=${2:?usage: eye.sh show <name> <title> <file|->}
+    src=${3:?usage: eye.sh show <name> <title> <file|-> ('-' = HTML on stdin)}
+    checkname "$name"
+    [ "$src" = - ] || [ -r "$src" ] || die "cannot read: $src"
+    tmp=$(mktemp)
+    trap 'rm -f "$tmp"' EXIT
+    python3 - "$name" "$title" "$src" > "$tmp" <<'PYEOF' || die "could not package $src"
+import base64, json, os, sys
+name, title, src = sys.argv[1:4]
+MAX = 24_000_000  # raw bytes; base64 stays under the body's 32MB gate
+IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+              ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml"}
+if src == "-":
+    raw = sys.stdin.buffer.read()
+    ext = ".html"
+else:
+    raw = open(src, "rb").read()
+    ext = os.path.splitext(src)[1].lower()
+if len(raw) > MAX:
+    sys.exit(f"{src}: {len(raw)} bytes — too big, cap is {MAX}")
+if ext in IMAGE_MIME:
+    kind = "image"
+    data = f"data:{IMAGE_MIME[ext]};base64," + base64.b64encode(raw).decode()
+else:
+    try:
+        data = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        sys.exit(f"{src}: binary data — only images ({', '.join(IMAGE_MIME)}) or utf-8 text")
+    kind = "html" if ext in (".html", ".htm") else "text"
+json.dump({"session": name, "title": title, "kind": kind, "data": data}, sys.stdout)
+PYEOF
+    api_file POST /bridge/show "$tmp"
+    echo ;;
   status)
     id=${1:?usage: eye.sh status <id> <working|done|error> <label...>}
     st=${2:?usage: eye.sh status <id> <working|done|error> <label...>}

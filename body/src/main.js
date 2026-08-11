@@ -145,12 +145,51 @@ function sessionColor(name) {
   return hub.reg.get(name)?.color ?? "#9db4ff";
 }
 
+// -- call waiting + the canvas gallery --------------------------------------
+// His law: nothing ever interrupts his screen. A session that wants him while
+// he's on another channel goes on hold; a visual to show him becomes a quiet
+// mark by the eye. He opens things himself — by voice or from the tray.
+const waiting = []; // calls on hold, oldest first: {session, why, ts}
+const gallery = []; // visuals awaiting his eyes: {id, session, title, kind, data, ts}
+const GALLERY_MAX = 12;
+let showSeq = 0;
+
+// the eye shows: the FRONT caller tints the whole organism (the shipped
+// attention look), everyone else is a small colored mark docked beside it
+function sendDock() {
+  const front = waiting[0] ?? null;
+  eye?.webContents.send("dock", {
+    marks: [
+      ...waiting.map((w) => ({ session: w.session, kind: "call", color: sessionColor(w.session) })),
+      ...gallery.map((s) => ({ session: s.session, kind: "show", color: sessionColor(s.session) })),
+    ],
+    front: front
+      ? { session: front.session, label: front.why, color: sessionColor(front.session) }
+      : null,
+  });
+}
+
+function publicItem(s) {
+  return {
+    id: s.id,
+    session: s.session,
+    color: sessionColor(s.session),
+    title: s.title,
+    kind: s.kind,
+    data: s.data,
+    ts: s.ts,
+    queued: gallery.length,
+  };
+}
+
 const EYE_W = 340;
 const EYE_H = 380;
 const MARGIN = 16;
 const PORT = 8642;
 
 let eye;
+let canvas = null;
+let quitting = false;
 
 function loadConfig() {
   const dir = path.join(app.getPath("appData"), "dark-eye");
@@ -198,6 +237,50 @@ function createEye() {
   eye.loadFile(path.join(__dirname, "eye", "index.html"));
 }
 
+// the canvas: a real window the brains draw into. It NEVER opens by itself —
+// only openCanvas() (his voice, or the tray) makes it visible. Closing hides
+// it; pending items survive until he gives a verdict.
+function createCanvas() {
+  const { workArea } = screen.getPrimaryDisplay();
+  const W = Math.min(980, workArea.width - 80);
+  const H = Math.min(720, workArea.height - 80);
+  canvas = new BrowserWindow({
+    width: W,
+    height: H,
+    x: workArea.x + Math.round((workArea.width - W) / 2),
+    y: workArea.y + Math.round((workArea.height - H) / 2),
+    frame: false,
+    resizable: true,
+    show: false,
+    backgroundColor: "#050807",
+    webPreferences: {
+      preload: path.join(__dirname, "canvas", "preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+    },
+  });
+  canvas.setContentProtection(cloaked); // the canvas cloaks with the Eye
+  canvas.loadFile(path.join(__dirname, "canvas", "index.html"));
+  canvas.on("close", (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    canvas.hide();
+  });
+}
+
+function openCanvas() {
+  if (!canvas) createCanvas();
+  const item = gallery[0] ?? null;
+  const present = () => {
+    canvas.webContents.send("canvas-item", item ? publicItem(item) : null);
+    canvas.show();
+  };
+  if (canvas.webContents.isLoading()) canvas.webContents.once("did-finish-load", present);
+  else present();
+}
+
 const log = (m) => console.log(`[body] ${m}`);
 
 // one mouth for everyone: caption + Kokoro, used by brains and the body itself
@@ -212,18 +295,35 @@ function whisper(text) {
   eye?.webContents.send("speak", text);
 }
 
-// route Oscar's voice to a session: sigil recolors, stale attention clears
+// route Oscar's voice to a session: sigil recolors; if that session was on
+// hold, its call is answered — the held reason is spoken and the session gets
+// a channel-open event on its bus so it knows to re-ask its question
 function routeTo(name, { announce = false } = {}) {
   hub.active = name;
   log(`voice routed to session: ${name}`);
   eye?.webContents.send("session", { active: name, color: sessionColor(name) });
-  eye?.webContents.send("attention", { session: name, on: false });
-  if (announce) say(`Channel open. ${name} has your voice.`);
+  const i = waiting.findIndex((w) => w.session === name);
+  const held = i >= 0 ? waiting.splice(i, 1)[0] : null;
+  if (held) hub.bus(name).push({ event: "channel-open", detail: held.why || "" });
+  const shows = gallery.filter((s) => s.session === name).length;
+  if (announce)
+    say(
+      `Channel open. ${name} has your voice.` +
+        (held?.why ? ` They were waiting: ${held.why}.` : "") +
+        (shows ? ` ${shows === 1 ? "One visual" : shows + " visuals"} on the canvas.` : "")
+    );
+  else if (held) whisper(`⟨ ${name} ⟩ call answered${held.why ? " · " + held.why : ""}`);
+  sendDock();
 }
 
 // "switch to fast" is for the BODY, not the brain — route the mic, confirm out
 // loud, and swallow the transcript. Everything else goes to the active session.
 const SWITCH_RE = /\b(?:switch|change|cambia(?:r)?)\b/i;
+// "show me" / "open the canvas" — the manual approval that lets a visual on
+// screen. Full-utterance match only, so dictation like "show me the file"
+// still reaches the brain untouched.
+const CANVAS_RE = /^(?:show me|open (?:the )?canvas|canvas|close (?:the )?canvas|muestra|abre el lienzo|cierra el lienzo)[.!?]?$/i;
+const WAITING_RE = /\b(?:who(?:'s| is)? waiting|qui[eé]n espera)\b/i;
 function handleTranscript(text) {
   const words = text.trim().split(/\s+/);
   if (SWITCH_RE.test(text) && words.length <= 8) {
@@ -231,6 +331,26 @@ function handleTranscript(text) {
     const target = hub.names().find((n) => lower.includes(n.toLowerCase()));
     if (target) routeTo(target, { announce: true });
     else say(`I can route you to: ${hub.names().join(", ")}. Say switch to, then the name.`);
+    return;
+  }
+  if (CANVAS_RE.test(text.trim())) {
+    if (/close|cierra/i.test(text)) canvas?.hide();
+    else if (gallery.length) openCanvas();
+    else say("The canvas is empty — nothing waiting to be shown.");
+    return;
+  }
+  if (WAITING_RE.test(text) && words.length <= 6) {
+    if (!waiting.length && !gallery.length) {
+      say("No one is waiting.");
+      return;
+    }
+    const calls = waiting.length
+      ? "On hold: " + waiting.map((w) => w.session + (w.why ? ", " + w.why : "")).join("; ")
+      : "";
+    const shows = gallery.length
+      ? "On the canvas: " + gallery.map((s) => s.session + ", " + s.title).join("; ")
+      : "";
+    say([calls, shows].filter(Boolean).join(". ") + ".");
     return;
   }
   hub.push(text);
@@ -321,6 +441,7 @@ let cloaked = true; // createEye() boots with content protection on
 function setCloak(on) {
   cloaked = on;
   eye?.setContentProtection(on);
+  canvas?.setContentProtection(on);
   log(`cloak: ${on ? "on — hidden from capture" : "off — visible to capture"}`);
 }
 
@@ -355,6 +476,12 @@ function startTray() {
           click: () => routeTo(s.name),
         })),
         { type: "separator" },
+        {
+          label: gallery.length
+            ? `Canvas — ${gallery.length} waiting to be shown`
+            : "Canvas (empty)",
+          click: () => openCanvas(),
+        },
         { label: "Mic: Ctrl+Alt+Space (tap to open / tap to send)", enabled: false },
         {
           label: "Cloaked from capture",
@@ -387,6 +514,24 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((wc, permission, cb) =>
     cb(permission === "media" && wc.getURL().startsWith("file://"))
   );
+  // canvas verdicts: Approve/Reject travel back to the owning session's bus
+  // as events; Later just hides the window and keeps the item pending
+  ipcMain.on("canvas-verdict", (_e, { id, verdict }) => {
+    const i = gallery.findIndex((s) => s.id === id);
+    if (i < 0) return;
+    const [item] = gallery.splice(i, 1);
+    log(`canvas: ${item.id} ${verdict} — ${item.title}`);
+    if (verdict === "approved" || verdict === "rejected")
+      hub.bus(item.session).push({ event: `canvas-${verdict}`, detail: item.title });
+    const next = gallery[0] ?? null;
+    if (next) canvas?.webContents.send("canvas-item", publicItem(next));
+    else {
+      canvas?.webContents.send("canvas-item", null);
+      canvas?.hide();
+    }
+    sendDock();
+  });
+  ipcMain.on("canvas-close", () => canvas?.hide());
   createEye();
   startVoice(cfg);
   startPtt();
@@ -412,12 +557,43 @@ app.whenReady().then(() => {
     },
     onAttention: async ({ session, on, label }) => {
       log(`attention: ${session} ${on ? "on" : "off"} ${label ?? ""}`);
-      eye?.webContents.send("attention", {
+      const i = waiting.findIndex((w) => w.session === session);
+      if (on) {
+        if (i >= 0) waiting[i].why = label || waiting[i].why;
+        else {
+          waiting.push({ session, why: label || "", ts: Date.now() });
+          // the front caller gets the eye tint; anyone behind gets a whisper
+          // so a queued call is still noticed without stealing anything
+          if (waiting.length > 1)
+            whisper(`⟨ ${session} ⟩ waiting${label ? " · " + label : ""}`);
+        }
+      } else if (i >= 0) waiting.splice(i, 1);
+      sendDock();
+    },
+    onShow: async ({ session, title, kind, data }) => {
+      const item = {
+        id: "s" + ++showSeq,
         session,
-        on,
-        label: label ?? "",
-        color: sessionColor(session),
-      });
+        title: title || "untitled",
+        kind,
+        data,
+        ts: Date.now(),
+      };
+      gallery.push(item);
+      if (gallery.length > GALLERY_MAX) {
+        const dropped = gallery.shift();
+        log(`gallery full — dropped oldest: ${dropped.id} (${dropped.title})`);
+      }
+      log(`show: ${item.id} from ${session} — ${item.title} (${kind}, ${data.length} chars)`);
+      if (session === hub.active && canvas?.isVisible()) {
+        // he's already looking at the canvas and talking to this session —
+        // rendering in place is not an interruption
+        canvas.webContents.send("canvas-item", publicItem(item));
+      } else {
+        whisper(`⟨ ${session} ⟩ has something to show · ${item.title}`);
+      }
+      sendDock();
+      return { ok: true, id: item.id };
     },
     onActive: async (session) => routeTo(session),
     onIntroduce: async ({ session, brief }) => {
@@ -436,5 +612,8 @@ app.whenReady().then(() => {
   });
 });
 
+app.on("before-quit", () => {
+  quitting = true; // lets the canvas window actually die instead of hiding
+});
 app.on("will-quit", () => hook?.stop());
 app.on("window-all-closed", () => {});
