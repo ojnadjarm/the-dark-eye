@@ -607,7 +607,8 @@ app.whenReady().then(() => {
   ipcMain.on("dock-hover", (_e, over) => eye?.setIgnoreMouseEvents(!over, { forward: true }));
   ipcMain.on("dock-click", (_e, { kind, session }) => {
     log(`dock click: ${kind} ${session}`);
-    if (kind === "show") openCanvas();
+    if (kind === "chat") canvas?.isVisible() ? canvas.hide() : openCanvas();
+    else if (kind === "show") openCanvas();
     else routeTo(session); // clicking a held call answers it
   });
   createEye();

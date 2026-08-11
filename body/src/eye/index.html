@@ -498,12 +498,27 @@
     // Marks are the eye's ONE clickable spot: click a show to open the
     // canvas, click a call to answer it.
     markRects.length = 0;
+    // the chat button — the Eye's own furniture, permanently docked at the
+    // bottom slot: green (it belongs to the Eye, not an agent), dim until
+    // hovered, click toggles the canvas/chat. Pending marks stack above it.
+    {
+      const S = 28, bx = 12, by = CY + 22 - S;
+      markRects.push({ x: bx, y: by, w: S, h: S, kind: 'chat', session: 'eye', key: 'eye:chat' });
+      const a = hoverKey === 'eye:chat' ? 0.95 : 0.32;
+      g.fillStyle = 'rgba(3,10,6,' + 0.75 * a + ')';
+      g.fillRect(bx, by, S, S);
+      g.strokeStyle = 'rgba(77,255,160,' + a + ')';
+      g.lineWidth = hoverKey === 'eye:chat' ? 2 : 1;
+      g.strokeRect(bx + 0.5, by + 0.5, S - 1, S - 1);
+      g.fillStyle = 'rgba(77,255,160,' + a + ')';
+      for (let li = 0; li < 3; li++) g.fillRect(bx + 7, by + 9 + li * 5, li === 2 ? 8 : 14, 2);
+    }
     dock.marks.slice(0, 8).forEach((m, i) => {
       const key = m.session + ':' + m.kind;
       if (!markGlyphs.has(key)) markGlyphs.set(key, kata());
       if (Math.random() < 0.004) markGlyphs.set(key, kata());
       // his spec: clearly visible — a real square badge, glyph inside
-      const S = 28, bx = 12, by = CY + 22 - i * (S + 8) - S;
+      const S = 28, bx = 12, by = CY + 22 - (i + 1) * (S + 8) - S;
       markRects.push({ x: bx, y: by, w: S, h: S, kind: m.kind, session: m.session, key });
       const hovered = hoverKey === key;
       const [mr, mg, mb] = hexRGB(m.color || '#9db4ff');
