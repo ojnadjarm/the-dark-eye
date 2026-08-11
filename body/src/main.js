@@ -76,6 +76,12 @@ const hub = {
   register(name, color) {
     const clean = String(name ?? "").toLowerCase().trim().replace(/[^a-z0-9-]/g, "").slice(0, 16);
     if (!clean) return { error: "invalid name — use letters, digits, dashes" };
+    // a name that is live right now belongs to someone — two pollers on one
+    // bus would round-robin Oscar's words between them
+    const live =
+      (this.buses.get(clean)?.waiters.length ?? 0) > 0 ||
+      Date.now() - (this.meta.get(clean)?.lastSeen ?? 0) < 90_000;
+    if (live) return { error: `name '${clean}' is connected right now — pick another` };
     const existing = this.reg.get(clean);
     const used = new Set(
       [...this.reg.entries()].filter(([n]) => n !== clean).map(([, r]) => r.color)
@@ -179,6 +185,11 @@ function createEye() {
     focusable: false,
     webPreferences: {
       preload: path.join(__dirname, "eye", "preload.js"),
+      // Electron 42 defaults, pinned so a future default change can't loosen us
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
     },
   });
   eye.setAlwaysOnTop(true, "screen-saver");
@@ -250,7 +261,8 @@ function startVoice(cfg) {
         samples: m.samples,
       });
     } else if (m.type === "transcript") {
-      log(`heard (${m.ms}ms): ${m.text}`);
+      // voice content stays out of logs unless he opts in (DARK_EYE_DEBUG)
+      log(`heard (${m.ms}ms): ${process.env.DARK_EYE_DEBUG ? m.text : `[${m.text?.length ?? 0} chars]`}`);
       if (m.text) handleTranscript(m.text);
     } else if (m.type === "err") {
       log(`voice error: ${m.message}`);
@@ -370,10 +382,10 @@ app.whenReady().then(() => {
     if (voiceReady && samples.length > 4000)
       voice.postMessage({ type: "transcribe", id: ++micSeq, samples, sampleRate });
   });
-  // the Eye's mic needs blanket media permission — it has no permission UI
+  // the Eye's mic needs media permission — but only for the local eye page
   const { session } = require("electron");
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) =>
-    cb(permission === "media")
+  session.defaultSession.setPermissionRequestHandler((wc, permission, cb) =>
+    cb(permission === "media" && wc.getURL().startsWith("file://"))
   );
   createEye();
   startVoice(cfg);
@@ -386,14 +398,18 @@ app.whenReady().then(() => {
     hub,
     log,
     onSpeak: async (text) => {
-      log(`speak: ${text}`);
+      log(`speak: ${process.env.DARK_EYE_DEBUG ? text : `[${text.length} chars]`}`);
       say(text);
     },
     onStatus: async (s) => {
       log(`status: ${s.id} ${s.state} ${s.label}`);
       eye?.webContents.send("status", s);
     },
-    onCloak: async (on) => setCloak(on),
+    onCloak: async (on) => {
+      setCloak(on);
+      // dropping the cloak remotely must be visible — never a silent unmasking
+      if (!on) whisper("⟨ cloak off — visible to capture ⟩");
+    },
     onAttention: async ({ session, on, label }) => {
       log(`attention: ${session} ${on ? "on" : "off"} ${label ?? ""}`);
       eye?.webContents.send("attention", {

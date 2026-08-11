@@ -49,8 +49,10 @@ POST /bridge/status    {"id","state":"working|done|error","label"} → colored o
 POST /bridge/cloak     {"on": true|false}                   → hide/show from screen recorders
 POST /bridge/attention {"session","on":true|false,"label"}  → eye tints/pulses in that session's color
 POST /bridge/active    {"session": "deep"}                  → route Oscar's voice to that session (no announcement)
-POST /bridge/register  {"name","color":"#hex?","brief"?}    → join the roster; unique name+color enforced,
-                                                              green refused; returns {name,color,note?,sessions}
+POST /bridge/register  {"name","color":"#hex?","brief"?}    → join the roster; green refused; a name that is
+                                                              live RIGHT NOW is refused (HTTP 200 {"error":...},
+                                                              idle names are reusable); success returns
+                                                              {name,color,note?,active,sessions}
 POST /bridge/introduce {"session","brief":"one line"}       → silent caption + shown in tray next to the name
 GET  /bridge/sessions                                       → {"active": "...", "sessions": [...]}
 All with header: x-dark-eye-key: <secret>
@@ -60,6 +62,18 @@ Claude-session possession recipe: persistent Monitor running a
 `/bridge/listen` long-poll loop (each transcript line = one wake event),
 answer with curl to `/bridge/speak`, ping `/bridge/status` when doing real
 work so the orbiters stay honest.
+
+**Plug-and-play possession (2026-08-11):** `bridge/eye.sh` wraps the whole
+protocol — gateway + secret auto-resolved every run, subcommands for every
+bridge endpoint (`eye.sh help`). The user-scope skill **`/eye`** (source of
+truth `bridge/SKILL.md`, installed to `~/.claude/skills/eye/` by
+`bridge/install.sh`; setup guide in `README.md`) walks any
+Claude session through the recipe: sessions → register → **Monitor with
+`eye.sh listen-loop <name>`** (the step models kept skipping — a session
+without it is deaf) → speak rules. Oscar types `/eye` or says "connect to
+the eye" in any session and it joins the roster. The skill's frontmatter
+pre-allows `Bash(eye.sh:*)` + Monitor, so no settings.json permission
+edits are needed.
 
 **Global MCP registration (2026-08-11):** the body is registered at USER
 scope in Claude Code (`~/.claude.json`), server name `dark-eye` — every new
@@ -89,9 +103,29 @@ dark-eye config.json).
 
 ## Config (`%APPDATA%\dark-eye\config.json`)
 
-`secret` (auto-generated) · `port` (default 8642) · `voiceSid` (default 17
-= deep male; ear-test wavs: `body/scripts/test-sid11..19.wav`) ·
+`secret` (auto-generated; the ONLY key present by default) · optional
+overrides, absent unless hand-added: `port` (default 8642) · `voiceSid`
+(default 17 = deep male; ear-test wavs: `body/scripts/test-sid11..19.wav`) ·
 `voiceSpeed` (default 1.0).
+
+## Security posture (QA + security audit round, 2026-08-11)
+
+- Server binds the **vEthernet (WSL) adapter only** (auto-detected in
+  server.js; falls back to 0.0.0.0 with a WARN log if no WSL adapter) —
+  port 8642 is NOT on Wi-Fi/LAN adapters anymore.
+- Auth: timing-safe compare, **fail-closed** (server refuses to start with
+  an empty secret). All endpoints behind the key, incl. /mcp.
+- `eye.sh` passes the secret to curl via fd (never argv → never in `ps`),
+  validates session names/timeouts, `curl -f` + die so 401/down are loud.
+- Remote cloak-OFF whispers "⟨ cloak off — visible to capture ⟩" on the Eye
+  — no silent unmasking (tray toggle stays silent).
+- Voice/speech content is redacted from body logs unless `DARK_EYE_DEBUG=1`.
+- Renderer: explicit contextIsolation/sandbox/nodeIntegration:false/
+  webSecurity, media permission only for the local file:// eye page.
+- Known-accepted residuals: secret readable by any WSL process (DrvFs
+  config.json) and duplicated in ~/.claude.json (mode 600); anyone with the
+  secret can speak/reroute (scoped by the adapter binding); speak curl cap
+  30s vs long TTS — watch only.
 
 ## Hard-won facts (do not relearn these)
 

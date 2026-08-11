@@ -7,9 +7,23 @@
  * sessions by saying "switch to <name>" — handled in main.js, not here.
  */
 const http = require("node:http");
+const os = require("node:os");
+const crypto = require("node:crypto");
 const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
 const { StreamableHTTPServerTransport } = require("@modelcontextprotocol/sdk/server/streamableHttp.js");
 const { z } = require("zod");
+
+// Brains live in WSL2, so the server only needs the vEthernet (WSL) adapter —
+// binding it keeps the port off Wi-Fi/Ethernet, where the secret would be the
+// only gate between the LAN and Oscar's speakers.
+function wslAdapterAddress() {
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    if (!/wsl/i.test(name)) continue;
+    const v4 = (addrs ?? []).find((a) => a.family === "IPv4" && !a.internal);
+    if (v4) return v4.address;
+  }
+  return null;
+}
 
 function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, hub }) {
   const mcp = new McpServer({ name: "dark-eye-body", version: "0.1.0" });
@@ -139,8 +153,16 @@ function readBody(req) {
 }
 
 function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, onActive, onIntroduce, onRegister, hub, log }) {
+  if (!secret) throw new Error("refusing to serve without a secret — check config.json");
+  const secretBuf = Buffer.from(secret);
+  const authed = (req) => {
+    const key = req.headers["x-dark-eye-key"];
+    if (typeof key !== "string") return false;
+    const keyBuf = Buffer.from(key);
+    return keyBuf.length === secretBuf.length && crypto.timingSafeEqual(keyBuf, secretBuf);
+  };
   const server = http.createServer(async (req, res) => {
-    if (secret && req.headers["x-dark-eye-key"] !== secret) {
+    if (!authed(req)) {
       res.writeHead(401).end();
       return;
     }
@@ -181,9 +203,10 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
       }
       return;
     }
-    if (req.url.startsWith("/bridge/listen")) {
+    if (new URL(req.url, "http://localhost").pathname === "/bridge/listen" && req.method === "GET") {
       const u = new URL(req.url, "http://localhost");
-      const ms = Math.min(Number(u.searchParams.get("timeoutMs") || 50000), 55000);
+      const rawMs = Number(u.searchParams.get("timeoutMs") || 50000);
+      const ms = Math.min(Number.isFinite(rawMs) && rawMs > 0 ? rawMs : 50000, 55000);
       const session = u.searchParams.get("session") || "deep";
       hub.touch(session);
       const t = await hub.bus(session).take(ms);
@@ -274,7 +297,12 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
       if (!res.headersSent) res.writeHead(500).end();
     }
   });
-  server.listen(port, "0.0.0.0", () => log(`MCP server on :${port}/mcp`));
+  const host = wslAdapterAddress();
+  if (host) server.listen(port, host, () => log(`MCP server on ${host}:${port}/mcp (WSL adapter only)`));
+  else {
+    log("WARN: WSL adapter not found — binding all interfaces; port 8642 is LAN-visible");
+    server.listen(port, "0.0.0.0", () => log(`MCP server on :${port}/mcp`));
+  }
   return server;
 }
 
