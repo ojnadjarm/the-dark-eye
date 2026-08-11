@@ -504,14 +504,18 @@
     {
       const S = 28, bx = 12, by = CY + 22 - S;
       markRects.push({ x: bx, y: by, w: S, h: S, kind: 'chat', session: 'eye', key: 'eye:chat' });
-      const a = hoverKey === 'eye:chat' ? 0.95 : 0.32;
+      const hovered = hoverKey === 'eye:chat';
+      if (!markGlyphs.has('eye:chat')) markGlyphs.set('eye:chat', kata());
+      if (Math.random() < 0.002) markGlyphs.set('eye:chat', kata());
+      const a = hovered ? 0.95 : 0.4;
       g.fillStyle = 'rgba(3,10,6,' + 0.75 * a + ')';
       g.fillRect(bx, by, S, S);
-      g.strokeStyle = 'rgba(77,255,160,' + a + ')';
-      g.lineWidth = hoverKey === 'eye:chat' ? 2 : 1;
+      g.strokeStyle = 'rgba(77,255,160,' + a * 0.8 + ')';
+      g.lineWidth = hovered ? 1.5 : 1;
       g.strokeRect(bx + 0.5, by + 0.5, S - 1, S - 1);
+      g.font = '16px ' + GLYPH_FONT;
       g.fillStyle = 'rgba(77,255,160,' + a + ')';
-      for (let li = 0; li < 3; li++) g.fillRect(bx + 7, by + 9 + li * 5, li === 2 ? 8 : 14, 2);
+      g.fillText(markGlyphs.get('eye:chat'), bx + S / 2 - 8, by + S / 2 + 6);
     }
     dock.marks.slice(0, 8).forEach((m, i) => {
       const key = m.session + ':' + m.kind;

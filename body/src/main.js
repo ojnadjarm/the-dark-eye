@@ -319,10 +319,14 @@ const log = (m) => console.log(`[body] ${m}`);
 
 // one mouth for everyone: caption + Kokoro, used by brains and the body
 // itself. A session's registered Kokoro speaker rides along so each brain
-// can sound like itself; no sid = the Eye's own voice.
+// can sound like itself; no sid = the Eye's own voice. Speech that arrives
+// while the voice worker is still booting is held and played once it's
+// ready — captions without audio broke his trust in the mouth.
+const pendingSpeech = [];
 function say(text, sid) {
   eye?.webContents.send("speak", text);
   if (voiceReady) voice.postMessage({ type: "speak", id: ++speakSeq, text, sid });
+  else if (pendingSpeech.length < 10) pendingSpeech.push({ text, sid });
 }
 
 // a whisper: the caption decodes on screen but no voice — for connection
@@ -409,6 +413,8 @@ function startVoice(cfg) {
     if (m.type === "ready") {
       voiceReady = true;
       log(`voice ready — ${m.speakers} speakers @ ${m.sampleRate}Hz, sid ${cfg.voiceSid ?? 17}`);
+      for (const p of pendingSpeech.splice(0))
+        voice.postMessage({ type: "speak", id: ++speakSeq, text: p.text, sid: p.sid });
       if (process.env.DARK_EYE_SAY) {
         const text = process.env.DARK_EYE_SAY;
         log(`self-test speak: ${text}`);
