@@ -3,8 +3,9 @@
 > An omniscient presence that watches, judges, and acts — now with a body.
 
 Oscar's own Jarvis/Cortana: a voice-first AI assistant wearing the DarkSaddler
-persona, living as an ethereal presence on the desktop, with its subagents
-visible inside a Matrix-datastream world you can jack into.
+persona, living as an ethereal presence on the desktop, with a second,
+immersive interface — the Field, a 3D Matrix world for real-time visual
+conversation.
 
 **Thesis:** in the agent era, talking beats writing. You don't read the work —
 you watch it happen and ask about it out loud. *Visibility replaces review.*
@@ -41,20 +42,23 @@ Same pattern as Navi's `notify` tool, scaled up.
 - **Body owns the hardware** (mic/speakers/screen, on Windows — WSL2 never
   touches audio). Same split as Navi, already shipped once.
 
-## The Field (interior — see spec/B-the-field.md)
+## The Field (see spec/B-the-field.md, DRAFT v4)
 
-An infinite digital field, and everything on it is *true*:
+A second way to talk to the same agents. The Eye is the ambient interface;
+the Field is the immersive one — a SEPARATE application: its own server +
+three.js web page (`field/`, runs in WSL), alive with or without the Eye.
+Local-only for the MVP; Electron can never be the VR window.
 
-- **DarkSaddler = the Tower** — a dark spire, the Eye burning at its top.
-- **Subagents = specters** — particle ghosts that rise when dispatched,
-  glitch reality around them while working (the static carries their real
-  file paths and tool names), dissolve gold when done.
-- **The Gaze = the Call:** when an agent needs approval, the Eye turns red
-  and its beam holds that specter — visible from anywhere, even the knot.
-- **Detail is voice:** focus a specter and ask; DarkSaddler answers out
-  loud. Reading is never the interface.
-- The field scales: corner knot over the desktop (Eye mode) → fullscreen
-  world (jacked in). Same simulation, two zooms.
+- **The main agent is a shapeshifter** — one glyph mass taking any form
+  (eye, figure, hound, ghost, wave, ...). The Tower concept is dead
+  (dropped 2026-08-19).
+- **Purpose: real-time visual conversation** — summon a tableboard (waves,
+  plots), conjure forms, morph them as the talk moves. "A game engine but
+  also a real-time field."
+- **The law, lean:** nothing appears unasked · empty field = honest field ·
+  status colors only where status is shown · the field never opens itself.
+- Parked: VR lens (Quest), real/PBR skin, glTF assets from agents, AR,
+  specters + the Gaze (redesigned later, tower-free).
 
 ## Persona
 
