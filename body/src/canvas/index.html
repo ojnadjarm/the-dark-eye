@@ -47,6 +47,18 @@
     display: flex; align-items: center; justify-content: center;
     color: #2f9e63; letter-spacing: 0.2em;
   }
+  /* the chat memory: this session's written words, shown when no visual is up */
+  #chatlog {
+    position: absolute; inset: 38px 0 44px 0;
+    overflow-y: auto; padding: 14px 16px; box-sizing: border-box;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  #chatlog .line { display: flex; gap: 8px; align-items: baseline; }
+  #chatlog .t { color: #2f9e63; flex: none; font-size: 11px; }
+  #chatlog .w { flex: none; }
+  #chatlog .line.you .w { color: #ffd166; }
+  #chatlog .x { color: #eafff2; white-space: pre-wrap; word-break: break-word; }
+  #chatlog .line.brain .x { color: #9fffc8; }
   #bar {
     position: absolute; left: 0; right: 0; bottom: 0; height: 44px;
     display: flex; align-items: center; gap: 8px; padding: 0 10px;
@@ -76,7 +88,8 @@
   <button id="close">✕</button>
 </div>
 <div id="stage"></div>
-<div id="empty">⟨ nothing on the canvas — the chat below still works ⟩</div>
+<div id="chatlog"></div>
+<div id="empty">⟨ nothing yet — type below, this session remembers the text ⟩</div>
 <div id="bar">
   <div id="todot"></div>
   <span id="to">→ deep</span>
@@ -87,20 +100,56 @@
   const $ = (id) => document.getElementById(id);
   let current = null;
 
+  // -- the chat memory: text lines for the session the voice is on ----------
+  // Arrives from the body (chat-log = whole history on open/switch,
+  // chat-entry = one live line). Voice never shows here — text only.
+  let entries = [];
+  let sess = { active: 'deep', color: '#b04dff' };
+  function lineEl(e) {
+    const div = document.createElement('div');
+    div.className = 'line ' + (e.who === 'oscar' ? 'you' : 'brain');
+    const t = document.createElement('span');
+    t.className = 't';
+    const d = new Date(e.ts);
+    t.textContent = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    const w = document.createElement('span');
+    w.className = 'w';
+    if (e.who === 'oscar') w.textContent = 'you ›';
+    else { w.textContent = sess.active + ' ›'; w.style.color = sess.color; }
+    const x = document.createElement('span');
+    x.className = 'x';
+    x.textContent = e.text;
+    div.append(t, w, x);
+    return div;
+  }
+  function renderLog() {
+    const el = $('chatlog');
+    el.textContent = '';
+    for (const e of entries) el.appendChild(lineEl(e));
+    el.scrollTop = el.scrollHeight;
+  }
+  // one truth for what occupies the middle: a visual wins, else the chat
+  // memory, else the hint
+  function refresh() {
+    $('chatlog').style.display = current ? 'none' : 'flex';
+    $('empty').style.display = !current && !entries.length ? 'flex' : 'none';
+  }
+
   function render(item) {
     current = item;
     const stage = $('stage');
     stage.textContent = '';
     if (!item) {
-      $('empty').style.display = 'flex';
       $('who').textContent = '';
       $('title').textContent = '';
       $('queue').textContent = '';
       $('dot').style.background = '#4dffa0';
       for (const b of ['approve', 'reject', 'dismiss', 'later']) $(b).style.display = 'none';
+      refresh();
+      $('chatlog').scrollTop = $('chatlog').scrollHeight;
       return;
     }
-    $('empty').style.display = 'none';
+    refresh();
     $('dot').style.background = item.color || '#9db4ff';
     $('who').textContent = '⟨ ' + item.session + ' ⟩';
     $('title').textContent = item.title;
@@ -160,8 +209,20 @@
     note('sending image…');
   });
   window.canvasApi.onSession((s) => {
+    sess = s;
     $('to').textContent = '→ ' + s.active;
     $('todot').style.background = s.color || '#b04dff';
+  });
+  window.canvasApi.onChatLog((list) => {
+    entries = list;
+    renderLog();
+    refresh();
+  });
+  window.canvasApi.onChatEntry((e) => {
+    entries.push(e);
+    $('chatlog').appendChild(lineEl(e));
+    $('chatlog').scrollTop = $('chatlog').scrollHeight;
+    refresh();
   });
   window.canvasApi.onNote(note);
   render(null);

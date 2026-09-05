@@ -79,6 +79,42 @@ Oscar's words:
 - `EVENT: image — <path>` — Oscar pasted an image into the canvas chat for
   you. Read the file at that path (it's a PNG, WSL-visible) and treat it as
   something he just showed you.
+- `EVENT: wake-session — <name>|<sock>` — Oscar is talking to session
+  `<name>` but its ear is dead (interrupts/backgrounding kill monitors) and
+  YOU are the live session asked to wake it. Use the SendMessage tool with
+  `to: "uds:<sock>"` (prepend `uds:` — the sock arrives as a raw path).
+  Socks go STALE on every Claude process restart — if the sock part is
+  empty or delivery fails, find the sleeper by name via ListAgents
+  instead (proven fallback in the 2026-08-11 reverse drill). Send this
+  message: *"Oscar is talking to you through the Dark Eye on channel
+  '<name>' and your ear is dead. Recover in THIS order: (1) DRAIN first —
+  repeat one-shot `/home/onadjar/projects/the-dark-eye/bridge/eye.sh
+  listen <name> 2000` calls until empty; his parked words arrive as VOICE
+  lines, answer them out loud via `eye.sh speak --as <name>`. (2) THEN arm
+  the ear: Monitor tool, command `/home/onadjar/projects/the-dark-eye/
+  bridge/eye.sh listen-loop <name>`, description `Oscar's voice via the
+  Dark Eye (<name>)`, persistent true. Drain-before-arm answers him in
+  your first breath and two pollers never race. (3) Refresh your wake
+  address: `eye.sh introduce <name> "<brief>"` — your process restarted,
+  so the sock the hub stored for you is stale."* Delivery of that
+  message is what wakes the sleeper. (Order proven in the 2026-08-11
+  wake drills, both directions.)
+
+**The Eye can also wake you itself** (the necromancer): register/introduce
+automatically leave your `$CLAUDE_CODE_SESSION_ID` with the hub, and when
+Oscar talks to you with your ear dead and NO live session to relay, the
+body resurrects your conversation headlessly (`bridge/wake.sh`). If you
+wake to a `NECROMANCER WAKE:` prompt, follow it exactly — drain, speak as
+yourself, keep listening, then rest. You need to do nothing to enable
+this; joining the Eye is enough.
+
+**If YOU receive a wake message like the one above** (from another session,
+telling you your ear is dead): follow it exactly — drain with one-shot
+listens and answer aloud FIRST, arm the Monitor second. Interrupts and
+backgrounding kill monitors silently — after any interruption, assume the
+ear may be dead. Before re-arming, check your own task list: TWO
+listen-loops on one name split Oscar's words between them, so re-arm only
+if your monitor is really gone.
 
 Oscar can also TYPE to you from the canvas chat bar — typed words arrive as
 normal `VOICE:` lines (they're his words either way; links usually arrive

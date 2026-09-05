@@ -34,6 +34,29 @@ usage: eye.sh <command> [args]
   attention <name> <on|off> [label...]  join/leave the hold queue for his attention
   active <name>                         route Oscar's voice to <name> (silent)
   cloak <on|off>                        hide from / show to screen recorders
+  field shift <form>                    morph the field's shapeshifter
+                                        (forms: eye figure hound ghost wave murmur)
+  field board <waves|lissajous|bars|off>  summon the tableboard / release it (gold)
+  field conjure <cube|torus|off>        conjure a wireframe / release it (gold)
+  field dismiss                         everything conjured dissolves — gold
+  field summon <name> <geo.json|->      summon ARBITRARY wireframe geometry:
+                                        JSON {"v":[[x,y,z]...],"e":[[a,b]...]}
+                                        (≤500 verts, ≤340 edges, WORLD coords)
+                                        — up to 12 forms live at once
+  field unsummon <name>                 release one summon (gold dissolve)
+  field say <text...>                   the field page itself speaks (browser
+                                        voice) + captions — no Eye needed
+  field cap <text...>                   caption only (no browser voice) — for
+                                        pairing with the Eye's Kokoro speak
+  field tv <file|-> [title...]          the board becomes a TV: images
+                                        (svg/png/jpg/webp ≤60KB) or VIDEO
+                                        (.webm/.mp4 ≤30MB, uploaded + looped)
+  field look <board|avatar|conjured|center> [dist]   glide HIS camera to frame
+                                        something (his drag cancels instantly)
+  field url                             print the field page address (open it
+                                        yourself — the field never opens itself)
+  NOTE: the Field is its OWN app (field/server.js on :8643, WSL) — not the
+        Eye's body. Start it: cd ~/projects/the-dark-eye/field && node server.js
 EOF
   exit "${1:-0}"
 }
@@ -115,14 +138,20 @@ case "$cmd" in
       shift 2
     fi
     checkname "$name"
-    api POST /bridge/register "$(jbody name,voice,brief "$name" "$vid" "${*:-}")"
+    # sock = this session's harness messaging address (a live session can WAKE
+    # this one via SendMessage); sid = its Claude conversation id (the Eye's
+    # necromancer resurrects it headlessly via wake.sh when no relay lives).
+    # Both exported by Claude Code to Bash; empty outside Claude = dropped.
+    api POST /bridge/register "$(jbody name,voice,brief,sock,sid "$name" "$vid" "${*:-}" "${CLAUDE_CODE_MESSAGING_SOCKET:-}" "${CLAUDE_CODE_SESSION_ID:-}")"
     echo ;;
   introduce)
     name=${1:?usage: eye.sh introduce <name> <brief...>}
     shift
     [ $# -gt 0 ] || die "usage: eye.sh introduce <name> <brief...>"
     checkname "$name"
-    api POST /bridge/introduce "$(jbody session,brief "$name" "$*")"
+    # introduce also refreshes the wake addresses — unlike register it has no
+    # liveness guard, so a LIVE session can update its sock + mind anytime
+    api POST /bridge/introduce "$(jbody session,brief,sock,sid "$name" "$*" "${CLAUDE_CODE_MESSAGING_SOCKET:-}" "${CLAUDE_CODE_SESSION_ID:-}")"
     echo ;;
   speak)
     as=""
@@ -222,6 +251,115 @@ PYEOF
     on=${1:?usage: eye.sh cloak <on|off>}
     api POST /bridge/cloak "$(jbody on "$([ "$on" = on ] && echo true || echo false)")"
     echo ;;
+  field)
+    # the Field is its OWN application (spec B §4): field/server.js in WSL on
+    # :8643 with its own key — NOT the Eye's body. Both Windows browsers and
+    # WSL shells reach it at localhost (WSL2 localhost forwarding).
+    sub=${1:?usage: eye.sh field <shift|board|conjure|dismiss|url> [arg]}
+    shift || true
+    FIELD_BASE="http://localhost:${DARK_EYE_FIELD_PORT:-8643}"
+    FIELD_KEY_FILE="${DARK_EYE_FIELD_KEY:-$HOME/projects/the-dark-eye/field/.key}"
+    [ -r "$FIELD_KEY_FILE" ] || die "field key not readable: $FIELD_KEY_FILE (was the field app set up?)"
+    FKEY=$(tr -d '[:space:]' < "$FIELD_KEY_FILE")
+    [ -n "$FKEY" ] || die "field key file is empty: $FIELD_KEY_FILE"
+    fop() { # fop <json> — POST one op to the field server, loud when it's down
+      curl -sf -m "${EYE_CURL_TIMEOUT:-15}" -X POST \
+        -H @<(printf 'x-field-key: %s\n' "$FKEY") -H "Content-Type: application/json" \
+        -d "$1" "$FIELD_BASE/op" \
+        || die "the field is not running — start it: cd ~/projects/the-dark-eye/field && node server.js"
+    }
+    case "$sub" in
+      shift)
+        form=${1:?usage: eye.sh field shift <eye|figure|hound|ghost|wave|murmur>}
+        case "$form" in eye|figure|hound|ghost|wave|murmur) ;; *) die "unknown form '$form' — forms: eye figure hound ghost wave murmur" ;; esac
+        fop "$(jbody op,form shift "$form")"
+        echo ;;
+      board)
+        mode=${1:?usage: eye.sh field board <waves|lissajous|bars|off>}
+        case "$mode" in waves|lissajous|bars|off) ;; *) die "unknown board mode '$mode' — modes: waves lissajous bars off" ;; esac
+        fop "$(jbody op,mode board "$mode")"
+        echo ;;
+      conjure)
+        shape=${1:?usage: eye.sh field conjure <cube|torus|off>}
+        case "$shape" in cube|torus|off) ;; *) die "unknown shape '$shape' — shapes: cube torus off" ;; esac
+        fop "$(jbody op,shape conjure "$shape")"
+        echo ;;
+      dismiss)
+        fop '{"op":"dismiss"}'
+        echo ;;
+      summon)
+        name=${1:?usage: eye.sh field summon <name> <geometry.json|->}
+        src=${2:?usage: eye.sh field summon <name> <geometry.json or - for stdin>}
+        # merge {"op","name"} into the geometry JSON safely (python for quoting)
+        fop "$(cat -- "$src" | python3 -c 'import json,sys; g=json.load(sys.stdin); print(json.dumps({"op":"summon","name":sys.argv[1],"v":g["v"],"e":g["e"]}))' "$name")" || exit 1
+        echo ;;
+      unsummon)
+        name=${1:?usage: eye.sh field unsummon <name>}
+        fop "$(jbody op,name unsummon "$name")"
+        echo ;;
+      say)
+        [ $# -gt 0 ] || die "usage: eye.sh field say <text...>"
+        fop "$(jbody op,text say "$*")"
+        echo ;;
+      cap)
+        # caption only, no browser TTS — pair with `eye.sh speak` (Kokoro),
+        # his call 2026-08-23: "I like the voice in the Eye more"
+        [ $# -gt 0 ] || die "usage: eye.sh field cap <text...>"
+        fop "$(printf '%s' "$*" | python3 -c 'import json,sys;print(json.dumps({"op":"say","text":sys.stdin.read(),"quiet":True}))')"
+        echo ;;
+      tv)
+        src=${1:?usage: eye.sh field tv <image or video file, - for svg stdin> [title...]}
+        shift || true
+        title="$*"
+        case "$src" in
+          *.webm|*.mp4)
+            # HARD RULE (frozen-board night, 2026-08-23): Oscar's AMD hardware
+            # video decoder wedges — any hw-decodable stream freezes on ONE
+            # frame with every playback metric healthy. H.264 4:4:4 has no hw
+            # decode path anywhere, so browsers software-decode it. Transcode
+            # every board reel unless it already is 4:4:4.
+            if command -v ffprobe >/dev/null 2>&1 && command -v ffmpeg >/dev/null 2>&1; then
+              vfmt=$(ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt -of csv=p=0 "$src" 2>/dev/null || true)
+              if [ -n "$vfmt" ] && [ "$vfmt" != "yuv444p" ]; then
+                t444=$(mktemp --suffix=.mp4)
+                if ffmpeg -y -loglevel error -i "$src" -an -c:v libx264 -pix_fmt yuv444p -profile:v high444 -crf 21 -movflags +faststart "$t444" 2>/dev/null; then
+                  src=$t444
+                else
+                  rm -f "$t444"; echo "warn: 4:4:4 transcode failed, uploading as-is (may freeze on his GPU)" >&2
+                fi
+              fi
+            fi
+            vmime=video/webm; case "$src" in *.mp4) vmime=video/mp4 ;; esac
+            up=$(curl -fsS --max-time 60 -X POST "$FIELD_BASE/media" \
+              -H @<(printf 'x-field-key: %s\n' "$FKEY") -H "Content-Type: $vmime" \
+              --data-binary @"$src") || die "media upload failed — is the field running?"
+            murl=$(printf '%s' "$up" | python3 -c 'import json,sys;d=json.load(sys.stdin);u=d.get("url");print(u) if u else sys.exit(1)') || die "upload rejected: $up"
+            [ -n "${t444:-}" ] && rm -f "$t444"
+            fop "$(jbody op,media,title tv "$murl" "$title")"
+            echo
+            ;;
+          *)
+            mime=image/svg+xml
+            case "$src" in *.png) mime=image/png ;; *.jpg|*.jpeg) mime=image/jpeg ;; *.webp) mime=image/webp ;; esac
+            if [ "$src" = "-" ]; then b64=$(base64 -w0) || die "cannot read stdin"
+            else b64=$(base64 -w0 -- "$src") || die "cannot read $src"; fi
+            fop "$(jbody op,image,title tv "data:$mime;base64,$b64" "$title")"
+            echo
+            ;;
+        esac ;;
+      look)
+        spot=${1:?usage: eye.sh field look <board|avatar|conjured|center> [dist]}
+        case "$spot" in board|avatar|conjured|center) ;; *) die "unknown look target '$spot' — targets: board avatar conjured center" ;; esac
+        if [ -n "${2:-}" ]; then case "$2" in ''|*[!0-9]*) die "dist must be a number" ;; esac; fop "{\"op\":\"look\",\"at\":\"$spot\",\"dist\":$2}"
+        else fop "$(jbody op,at look "$spot")"; fi
+        echo ;;
+      url)
+        # the law: the field never opens by itself — this only PRINTS the
+        # address; Oscar (or a human hand) opens the tab
+        echo "$FIELD_BASE/?key=$FKEY" ;;
+      *)
+        die "unknown field command: $sub (shift|board|conjure|dismiss|summon|unsummon|say|cap|tv|look|url)" ;;
+    esac ;;
   help|-h|--help)
     usage 0 ;;
   *)

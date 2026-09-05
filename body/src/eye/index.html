@@ -671,8 +671,15 @@
     // clicks arm over the whole reveal zone, not just the tiny targets —
     // arming on target-entry raced his click (the first-click bug)
     const inZone = ev.clientX > CX - RX - 30 && ev.clientY > CY - RY - 34;
+    // the dock marks stack at the LEFT edge, outside the eye zone — capture
+    // must arm near them too or clicks fall through the window (his bug:
+    // "can't open the canvas from the notification"). Generous 12px halo so
+    // arming beats the click, same law as the zone.
+    const nearMark = markRects.some((r) =>
+      ev.clientX >= r.x - 12 && ev.clientX <= r.x + r.w + 12 &&
+      ev.clientY >= r.y - 12 && ev.clientY <= r.y + r.h + 12);
     if (inZone) eyeHoverT = t;
-    setCapture(inZone);
+    setCapture(inZone || nearMark);
     const hit = hitMark(ev);
     const key = hit ? hit.key : null;
     if (key !== hoverKey) {
@@ -680,9 +687,14 @@
       c.style.cursor = key ? 'pointer' : 'default';
     }
   });
-  window.addEventListener('click', (ev) => {
+  // the double-click ghost: a 'click' only synthesizes if mousedown AND
+  // mouseup both survive — a capture flip in between kills it. Act on the
+  // mousedown itself, so the first press counts. (No 'click' listener —
+  // both firing would toggle the canvas open-then-shut.)
+  window.addEventListener('mousedown', (ev) => {
     const hit = hitMark(ev);
-    if (hit) window.eye.dockClick({ kind: hit.kind, session: hit.session });
+    window.eye.debug('mousedown b=' + ev.button + ' capture=' + captureOn + ' hit=' + (hit ? hit.key : 'none'));
+    if (ev.button === 0 && hit) window.eye.dockClick({ kind: hit.kind, session: hit.session });
   });
   // while captured the window is a normal one, so leave events are reliable —
   // a timer here would release capture under a resting cursor mid-click

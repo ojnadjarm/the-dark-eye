@@ -7,6 +7,8 @@
  * between sessions by saying "switch to <name>" — handled in main.js, not
  * here. listen can also deliver body events (channel-open, canvas-approved,
  * canvas-rejected) instead of a transcript.
+ * The Field (spec B) is its OWN application at field/ — the body carries no
+ * field code and serves no field routes.
  */
 const http = require("node:http");
 const os = require("node:os");
@@ -210,13 +212,14 @@ function readBody(req) {
 function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, onActive, onIntroduce, onRegister, onShow, hub, log }) {
   if (!secret) throw new Error("refusing to serve without a secret — check config.json");
   const secretBuf = Buffer.from(secret);
-  const authed = (req) => {
-    const key = req.headers["x-dark-eye-key"];
+  const keyMatches = (key) => {
     if (typeof key !== "string") return false;
     const keyBuf = Buffer.from(key);
     return keyBuf.length === secretBuf.length && crypto.timingSafeEqual(keyBuf, secretBuf);
   };
+  const authed = (req) => keyMatches(req.headers["x-dark-eye-key"]);
   const server = http.createServer(async (req, res) => {
+    const u = new URL(req.url, "http://localhost");
     if (!authed(req)) {
       res.writeHead(401).end();
       return;
@@ -261,8 +264,7 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
       }
       return;
     }
-    if (new URL(req.url, "http://localhost").pathname === "/bridge/listen" && req.method === "GET") {
-      const u = new URL(req.url, "http://localhost");
+    if (u.pathname === "/bridge/listen" && req.method === "GET") {
       const rawMs = Number(u.searchParams.get("timeoutMs") || 50000);
       const ms = Math.min(Number.isFinite(rawMs) && rawMs > 0 ? rawMs : 50000, 55000);
       const session = u.searchParams.get("session") || "deep";
@@ -316,6 +318,10 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
           color: body?.color,
           voice: body?.voice,
           brief: body?.brief ? String(body.brief) : undefined,
+          // harness messaging address — lets a live session WAKE this one
+          sock: body?.sock ? String(body.sock).slice(0, 256) : undefined,
+          // Claude conversation id — lets the necromancer resurrect it
+          sid: body?.sid ? String(body.sid).slice(0, 64) : undefined,
         });
         res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(r));
       } catch (err) {
@@ -330,6 +336,8 @@ function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, on
         await onIntroduce({
           session: String(body?.session ?? "deep"),
           brief: String(body?.brief ?? ""),
+          sock: body?.sock ? String(body.sock).slice(0, 256) : undefined,
+          sid: body?.sid ? String(body.sid).slice(0, 64) : undefined,
         });
         res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
       } catch (err) {

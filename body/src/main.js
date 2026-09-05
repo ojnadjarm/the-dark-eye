@@ -80,14 +80,12 @@ const hub = {
   // `adopt` is for the hub itself decorating a name that already exists as a
   // live bus (auto-join on speak/attention) — the liveness guard only stops
   // NEW registrants from stealing a live name, so adoption skips it.
-  register(name, color, voice, adopt = false) {
+  register(name, color, voice, adopt = false, sock = undefined, mind = undefined) {
     const clean = String(name ?? "").toLowerCase().trim().replace(/[^a-z0-9-]/g, "").slice(0, 16);
     if (!clean) return { error: "invalid name — use letters, digits, dashes" };
     // a name that is live right now belongs to someone — two pollers on one
     // bus would round-robin Oscar's words between them
-    const live =
-      (this.buses.get(clean)?.waiters.length ?? 0) > 0 ||
-      Date.now() - (this.meta.get(clean)?.lastSeen ?? 0) < 90_000;
+    const live = this.isConnected(clean);
     if (live && !adopt) return { error: `name '${clean}' is connected right now — pick another` };
     const existing = this.reg.get(clean);
     const used = new Set(
@@ -132,19 +130,31 @@ const hub = {
     if (sid == null) sid = existing?.sid != null && !usedSid.has(existing.sid) ? existing.sid : null;
     if (sid == null) sid = VOICE_POOL.find((s) => !usedSid.has(s)) ?? null;
     if (sid == null) for (let s = 0; s < 53 && sid == null; s++) if (s !== EYE_SID && !usedSid.has(s)) sid = s;
-    this.reg.set(clean, { color: chosen, sid: sid ?? EYE_SID });
+    // sock = the session's harness messaging address (relay wake); mind =
+    // its Claude conversation id (necromancer wake). Both kept across
+    // re-registers that omit them, so a wake stays possible after adoption
+    this.reg.set(clean, {
+      color: chosen,
+      sid: sid ?? EYE_SID,
+      sock: sock ?? existing?.sock,
+      mind: mind ?? existing?.mind,
+    });
     const note = [colorNote, voiceNote].filter(Boolean).join("; ");
     return { name: clean, color: chosen, voice: sid ?? EYE_SID, ...(note ? { note } : {}) };
   },
+  // live = someone is polling this bus now, or did within the 90s heartbeat
+  isConnected(name) {
+    return (
+      (this.buses.get(name)?.waiters.length ?? 0) > 0 ||
+      Date.now() - (this.meta.get(name)?.lastSeen ?? 0) < 90_000
+    );
+  },
   roster() {
-    const now = Date.now();
     return this.names().map((name) => ({
       name,
       color: this.reg.get(name)?.color ?? null,
       voice: this.reg.get(name)?.sid ?? null,
-      connected:
-        (this.buses.get(name)?.waiters.length ?? 0) > 0 ||
-        now - (this.meta.get(name)?.lastSeen ?? 0) < 90_000,
+      connected: this.isConnected(name),
       active: this.active === name,
       brief: this.meta.get(name)?.brief ?? null,
     }));
@@ -181,6 +191,48 @@ const heldWords = new Map(); // session → [text] — speech parked while he's 
 const HELD_WHY = "words on hold";
 const GALLERY_MAX = 12;
 let showSeq = 0;
+
+// -- per-session chat memory ------------------------------------------------
+// The canvas chat remembers TEXT only, per session: what he types, what a
+// session sends him in writing (attention, brief, show), his verdicts. Voice
+// never lands here — spoken words live in the air, not in the log. Kept on
+// disk (appData/dark-eye/chat/<session>.jsonl) so the memory survives
+// restarts; the canvas shows the last CHAT_MAX entries.
+const CHAT_MAX = 500;
+const chats = new Map(); // session → [{who:'oscar'|'brain', text, ts}]
+const chatDir = () => path.join(app.getPath("appData"), "dark-eye", "chat");
+const chatFile = (session) =>
+  path.join(chatDir(), session.toLowerCase().replace(/[^a-z0-9-]/g, "") + ".jsonl");
+function chatHistory(session) {
+  if (!chats.has(session)) {
+    let entries = [];
+    try {
+      const lines = fs.readFileSync(chatFile(session), "utf8").split("\n").filter(Boolean);
+      entries = lines.slice(-CHAT_MAX).flatMap((l) => {
+        try { return [JSON.parse(l)]; } catch { return []; }
+      });
+      if (lines.length > CHAT_MAX)
+        fs.writeFileSync(chatFile(session), entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+    } catch {
+      /* no history yet */
+    }
+    chats.set(session, entries);
+  }
+  return chats.get(session);
+}
+function chatLog(session, who, text) {
+  const entry = { who, text, ts: Date.now() };
+  const history = chatHistory(session);
+  history.push(entry);
+  while (history.length > CHAT_MAX) history.shift();
+  try {
+    fs.mkdirSync(chatDir(), { recursive: true });
+    fs.appendFileSync(chatFile(session), JSON.stringify(entry) + "\n");
+  } catch (err) {
+    log(`chat memory write failed: ${err.message}`); // the RAM copy still holds
+  }
+  if (session === hub.active) canvas?.webContents.send("chat-entry", entry);
+}
 
 // pasted images land here as files; brains get the WSL path and read them
 const INBOX = path.join(__dirname, "..", "..", "inbox");
@@ -268,6 +320,14 @@ function createEye() {
   eye.setIgnoreMouseEvents(true, { forward: true });
   eye.setContentProtection(true);
   eye.loadFile(path.join(__dirname, "eye", "index.html"));
+  // prime the input path: Windows may swallow the first physical click on a
+  // window that has NEVER been interactive (double-click ghost, RUNBOOK
+  // debt) — flip capture on and back once at boot so his first real click
+  // is never the window's first
+  eye.webContents.once("did-finish-load", () => {
+    eye.setIgnoreMouseEvents(false);
+    setTimeout(() => eye?.setIgnoreMouseEvents(true, { forward: true }), 250);
+  });
 }
 
 // the canvas: a real window the brains draw into. It NEVER opens by itself —
@@ -308,14 +368,18 @@ function openCanvas() {
   const item = gallery[0] ?? null;
   const present = () => {
     canvas.webContents.send("session", { active: hub.active, color: sessionColor(hub.active) });
+    canvas.webContents.send("chat-log", chatHistory(hub.active));
     canvas.webContents.send("canvas-item", item ? publicItem(item) : null);
     canvas.show();
+    canvas.moveTop();
+    canvas.focus();
+    log(`canvas present: visible=${canvas.isVisible()} focused=${canvas.isFocused()} bounds=${JSON.stringify(canvas.getBounds())}`);
   };
   if (canvas.webContents.isLoading()) canvas.webContents.once("did-finish-load", present);
   else present();
 }
 
-const log = (m) => console.log(`[body] ${m}`);
+const log = (m) => console.log(`[body ${new Date().toISOString().slice(11, 23)}] ${m}`);
 
 // one mouth for everyone: caption + Kokoro, used by brains and the body
 // itself. A session's registered Kokoro speaker rides along so each brain
@@ -343,6 +407,7 @@ function routeTo(name, { announce = false } = {}) {
   log(`voice routed to session: ${name}`);
   eye?.webContents.send("session", { active: name, color: sessionColor(name) });
   canvas?.webContents.send("session", { active: name, color: sessionColor(name) });
+  canvas?.webContents.send("chat-log", chatHistory(name)); // the chat follows the channel
   const i = waiting.findIndex((w) => w.session === name);
   const held = i >= 0 ? waiting.splice(i, 1)[0] : null;
   if (held) hub.bus(name).push({ event: "channel-open", detail: held.why || "" });
@@ -350,9 +415,21 @@ function routeTo(name, { announce = false } = {}) {
   heldWords.delete(name);
   const shows = gallery.filter((s) => s.session === name).length;
   const why = held?.why && held.why !== HELD_WHY ? held.why : "";
+  // opening a channel to a sleeper IS the ask — wake it right away
+  let wakeNote = "";
+  if (!hub.isConnected(name)) {
+    const wake = requestWake();
+    lastDeafNotice = Date.now(); // his first words shouldn't double-announce
+    wakeNote = wake
+      ? wake.via
+        ? ` They're asleep — ${wake.via} is waking them.`
+        : " They're asleep — I'm waking them myself; first reply takes a few seconds."
+      : " They are not listening and I can't wake them — I will hold your words.";
+  }
   if (announce)
     say(
       `Channel open. ${name} has your voice.` +
+        wakeNote +
         (why ? ` They were waiting: ${why}.` : "") +
         (shows ? ` ${shows === 1 ? "One visual" : shows + " visuals"} on the canvas.` : "")
     );
@@ -371,6 +448,71 @@ const SWITCH_RE = /\b(?:switch|change|cambia(?:r)?)\b/i;
 // still reaches the brain untouched.
 const CANVAS_RE = /^(?:show me|open (?:the )?canvas|canvas|close (?:the )?canvas|muestra|abre el lienzo|cierra el lienzo)[.!?]?$/i;
 const WAITING_RE = /\b(?:who(?:'s| is)? waiting|qui[eé]n espera)\b/i;
+// a dead channel must never eat his words in silence: if nothing is polling
+// the active session (its Claude process closed or crashed), the Eye says so.
+// His words stay queued on the bus and deliver the moment it reconnects.
+// He spoke first, so speaking back breaks no law. Throttled per spell.
+let lastDeafNotice = 0;
+// the switchboard: a sleeping session can be WOKEN by any live one (harness
+// message delivery resumes it). Ask the first connected session to send the
+// wake — the event carries the sleeper's name + its messaging sock from
+// registration. Words stay parked on the sleeper's own bus (single source
+// of truth); the woken session re-arms its ear and the backlog flows.
+// tier 2, the necromancer: no live session to relay → the Eye resurrects
+// the sleeper itself. wake.sh runs `claude -p --resume <mind>` in WSL as one
+// headless turn (drain, answer aloud, keep listening, rest). Approved by
+// Oscar 2026-08-11. Throttled hard: a resurrection is slow (~15s cold) and
+// costs a transcript replay — never stack them.
+const lastWake = new Map(); // session → ts of last necromancer spawn
+function necromance(name, mind) {
+  if (Date.now() - (lastWake.get(name) ?? 0) < 120_000) return false;
+  lastWake.set(name, Date.now());
+  log(`necromancer: waking ${name} (mind ${mind})`);
+  try {
+    const { spawn } = require("node:child_process");
+    const child = spawn(
+      "wsl.exe",
+      ["-e", "/home/onadjar/projects/the-dark-eye/bridge/wake.sh", name, mind],
+      { detached: true, stdio: "ignore", windowsHide: true }
+    );
+    child.on("error", (e) => log(`necromancer spawn error: ${e.message}`));
+    child.unref();
+    return true;
+  } catch (err) {
+    log(`necromancer failed: ${err.message}`);
+    return false;
+  }
+}
+// returns how the wake went out: {via: "<session>"} = relay, {via: null} =
+// the Eye itself, null = no way to wake
+function requestWake() {
+  const relay = hub.roster().find((r) => r.connected && r.name !== hub.active);
+  if (relay) {
+    const sock = hub.reg.get(hub.active)?.sock || "";
+    hub.bus(relay.name).push({ event: "wake-session", detail: `${hub.active}|${sock}` });
+    log(`wake requested: ${relay.name} → ${hub.active}${sock ? "" : " (no sock — name-only)"}`);
+    return { via: relay.name };
+  }
+  const mind = hub.reg.get(hub.active)?.mind;
+  if (mind && necromance(hub.active, mind)) return { via: null };
+  return null;
+}
+function warnIfDeaf() {
+  if (hub.isConnected(hub.active)) return;
+  if (Date.now() - lastDeafNotice < 30_000) return;
+  lastDeafNotice = Date.now();
+  const wake = requestWake();
+  say(
+    wake
+      ? wake.via
+        ? `${hub.active} is asleep — I've asked ${wake.via} to wake it. ` +
+            `Your words are parked and will be delivered when its ear returns.`
+        : `${hub.active} is asleep and no one is around, so I'm waking it myself. ` +
+            `Your words are parked — its first reply takes a few seconds.`
+      : `${hub.active} is not listening and I have no way to wake it. ` +
+          `I'm holding your words; they'll hear them the moment they reconnect.`
+  );
+}
 function handleTranscript(text) {
   const words = text.trim().split(/\s+/);
   if (SWITCH_RE.test(text) && words.length <= 8) {
@@ -402,6 +544,7 @@ function handleTranscript(text) {
   }
   hub.push(text);
   eye?.webContents.send("heard", text);
+  warnIfDeaf();
 }
 
 // -- the voice --------------------------------------------------------------
@@ -570,6 +713,7 @@ app.whenReady().then(() => {
     if (i < 0) return;
     const [item] = gallery.splice(i, 1);
     log(`canvas: ${item.id} ${verdict} — ${item.title}`);
+    chatLog(item.session, "oscar", `${verdict} · ${item.title}`);
     if (verdict === "approved" || verdict === "rejected")
       hub.bus(item.session).push({ event: `canvas-${verdict}`, detail: item.title });
     const next = gallery[0] ?? null;
@@ -587,8 +731,22 @@ app.whenReady().then(() => {
     const clean = String(text ?? "").trim();
     if (!clean) return;
     log(`chat → ${hub.active}: ${process.env.DARK_EYE_DEBUG ? clean : `[${clean.length} chars]`}`);
+    chatLog(hub.active, "oscar", clean);
     hub.push(clean);
     eye?.webContents.send("heard", clean);
+    if (!hub.isConnected(hub.active)) {
+      let wake = null;
+      if (Date.now() - lastDeafNotice >= 30_000) {
+        lastDeafNotice = Date.now();
+        wake = requestWake();
+      }
+      canvas?.webContents.send(
+        "note",
+        wake
+          ? `⟨ ${hub.active} asleep — ${wake.via ?? "the Eye"} is waking it; words parked ⟩`
+          : `⟨ ${hub.active} not listening — parked, delivers on reconnect ⟩`
+      );
+    }
   });
   // a pasted image: saved to the inbox, the active brain gets the WSL path
   // and reads the file itself (read-on-gesture — nothing is ever watched)
@@ -601,8 +759,14 @@ app.whenReady().then(() => {
       const wsl = wslPath(file);
       log(`paste → ${hub.active}: ${wsl} (${bytes.byteLength} bytes)`);
       hub.bus(hub.active).push({ event: "image", detail: wsl });
+      chatLog(hub.active, "oscar", `⟨ image ⟩ ${wsl}`);
       eye?.webContents.send("heard", "⟨ image ⟩");
-      canvas?.webContents.send("note", `image sent → ${hub.active}`);
+      canvas?.webContents.send(
+        "note",
+        hub.isConnected(hub.active)
+          ? `image sent → ${hub.active}`
+          : `⟨ ${hub.active} not listening — image parked, delivers on reconnect ⟩`
+      );
     } catch (err) {
       log(`paste error: ${err.message}`);
       canvas?.webContents.send("note", `paste failed: ${err.message}`);
@@ -613,16 +777,34 @@ app.whenReady().then(() => {
   ipcMain.on("dock-hover", (_e, over) => eye?.setIgnoreMouseEvents(!over, { forward: true }));
   ipcMain.on("dock-click", (_e, { kind, session }) => {
     log(`dock click: ${kind} ${session}`);
-    if (kind === "chat") canvas?.isVisible() ? canvas.hide() : openCanvas();
-    else if (kind === "show") openCanvas();
+    // every dock action must be idempotent — the old ghost trained him to
+    // double-click, and a toggle turns that reflex into open-then-shut
+    // (2026-08-11 log trace). The sigil only opens; closing is the ✕,
+    // "later", or saying "close canvas".
+    if (kind === "chat" || kind === "show") openCanvas();
     else routeTo(session); // clicking a held call answers it
   });
   createEye();
   createCanvas(); // built hidden at boot — the first click must be as instant as the rest
+  // prime the canvas's first show: a hidden-born, never-painted window can
+  // drop its first .show() on Windows (the two-clicks residue — the log
+  // proved both presses land and openCanvas runs; only the FIRST show fails
+  // to display). One invisible show at boot forces the first composite.
+  canvas.webContents.once("did-finish-load", () => {
+    canvas.setOpacity(0);
+    canvas.showInactive();
+    setTimeout(() => {
+      canvas?.hide();
+      canvas?.setOpacity(1);
+      log("canvas primed (first composite forced)");
+    }, 150);
+  });
   startVoice(cfg);
   startPtt();
   startTray();
   hub.onConnect = (name) => whisper(`⟨ ${name} ⟩ connected`);
+  // the Field (spec B) is its own application at field/ — the body carries
+  // no field code; the Eye and the Field are two clients of the same agents.
   startServer({
     port: cfg.port || PORT,
     secret: cfg.secret,
@@ -659,6 +841,10 @@ app.whenReady().then(() => {
       log(`attention: ${session} ${on ? "on" : "off"} ${label ?? ""}`);
       const i = waiting.findIndex((w) => w.session === session);
       if (on) {
+        // written word, so it belongs to that session's chat memory — but only
+        // when it says something new, a repeated ping isn't a message
+        if (i < 0 || (label && label !== waiting[i].why))
+          chatLog(session, "brain", `waiting${label ? " · " + label : ""}`);
         if (i >= 0) waiting[i].why = label || waiting[i].why;
         else {
           waiting.push({ session, why: label || "", ts: Date.now() });
@@ -686,6 +872,7 @@ app.whenReady().then(() => {
         log(`gallery full — dropped oldest: ${dropped.id} (${dropped.title})`);
       }
       log(`show: ${item.id} from ${session} — ${item.title} (${kind}, ${data.length} chars)`);
+      chatLog(session, "brain", `on the canvas · ${item.title}`);
       if (session === hub.active && canvas?.isVisible()) {
         // he's already looking at the canvas and talking to this session —
         // rendering in place is not an interruption
@@ -697,13 +884,25 @@ app.whenReady().then(() => {
       return { ok: true, id: item.id };
     },
     onActive: async (session) => routeTo(session),
-    onIntroduce: async ({ session, brief }) => {
-      log(`introduce: ${session} — ${brief}`);
+    onIntroduce: async ({ session, brief, sock, sid }) => {
+      log(`introduce: ${session} — ${brief}${sock ? " (sock updated)" : ""}${sid ? " (mind updated)" : ""}`);
       hub.setBrief(session, brief);
+      // wake addresses ride along: introduce has no liveness guard, so a
+      // live session refreshes its own sock/mind here (register refuses
+      // live names)
+      if (sock || sid) {
+        if (!hub.reg.has(session)) hub.register(session, undefined, undefined, true);
+        const r = hub.reg.get(session);
+        if (r) {
+          if (sock) r.sock = sock;
+          if (sid) r.mind = sid;
+        }
+      }
+      chatLog(session, "brain", brief);
       whisper(`⟨ ${session} ⟩ ${brief}`);
     },
-    onRegister: async ({ name, color, voice, brief }) => {
-      const r = hub.register(name, color, voice);
+    onRegister: async ({ name, color, voice, brief, sock, sid }) => {
+      const r = hub.register(name, color, voice, false, sock, sid);
       if (r.error) return r;
       if (brief) hub.setBrief(r.name, brief);
       log(`register: ${r.name} ${r.color} voice=${r.voice}${r.note ? ` (${r.note})` : ""}`);
