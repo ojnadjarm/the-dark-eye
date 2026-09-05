@@ -1,0 +1,626 @@
+<title>The Field</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+<style>
+  :root {
+    --bg: #020703;
+    --phosphor: #29ff6a;
+    --bright: #d8ffe0;
+    --gold: #f5c453;
+    --dim: #167c3e;
+    --hud: #7fdc9a;
+    --panel: rgba(4, 18, 10, 0.82);
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--hud);
+    font-family: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+    overflow: hidden;
+  }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #c.dragging { cursor: grabbing; }
+
+  #hud {
+    position: fixed; top: 14px; left: 16px; pointer-events: none;
+    text-shadow: 0 0 8px rgba(41, 255, 106, 0.35);
+  }
+  #hud h1 {
+    margin: 0; font-size: 13px; font-weight: 700;
+    letter-spacing: 0.34em; color: var(--bright); text-transform: uppercase;
+  }
+  #hud p { margin: 4px 0 0; font-size: 10.5px; color: var(--dim); letter-spacing: 0.06em; }
+
+  #state {
+    position: fixed; top: 14px; right: 16px; pointer-events: none;
+    font-size: 10.5px; color: var(--hud); letter-spacing: 0.08em;
+    text-align: right; text-shadow: 0 0 8px rgba(41, 255, 106, 0.3);
+  }
+  #state b { color: var(--bright); font-weight: 400; }
+
+  #caption {
+    position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%);
+    font-size: 13px; color: var(--bright); letter-spacing: 0.1em;
+    text-shadow: 0 0 12px rgba(41, 255, 106, 0.55);
+    opacity: 0; transition: opacity 0.45s ease; pointer-events: none;
+    white-space: nowrap;
+  }
+  #caption.on { opacity: 1; }
+  #caption.gold { color: var(--gold); text-shadow: 0 0 12px rgba(245, 196, 83, 0.55); }
+
+  #console {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; gap: 8px; align-items: center;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-top: 1px solid rgba(22, 124, 62, 0.55);
+    backdrop-filter: blur(3px);
+  }
+  #console button {
+    font: 400 11.5px "JetBrains Mono", monospace;
+    color: var(--phosphor); background: transparent;
+    border: 1px solid rgba(41, 255, 106, 0.4); border-radius: 3px;
+    padding: 6px 11px; cursor: pointer; letter-spacing: 0.06em;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  #console button:hover { background: rgba(41, 255, 106, 0.12); color: var(--bright); }
+  #console button:focus-visible { outline: 1px solid var(--bright); outline-offset: 2px; }
+  #console button.dismiss { color: var(--gold); border-color: rgba(245, 196, 83, 0.4); }
+  #console button.dismiss:hover { background: rgba(245, 196, 83, 0.1); color: var(--gold); }
+  #cmd {
+    flex: 1; min-width: 60px;
+    font: 400 12px "JetBrains Mono", monospace;
+    color: var(--bright); background: rgba(2, 7, 3, 0.6);
+    border: 1px solid rgba(22, 124, 62, 0.6); border-radius: 3px;
+    padding: 6px 10px; letter-spacing: 0.04em;
+  }
+  #cmd::placeholder { color: rgba(88, 168, 120, 0.55); }
+  #cmd:focus { outline: none; border-color: rgba(41, 255, 106, 0.6); }
+</style>
+
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <h1>The Field</h1>
+  <p>concept v5 · no tower — the shapeshifter · drag to orbit · wheel to zoom</p>
+</div>
+<div id="state"></div>
+<div id="caption"></div>
+
+<div id="console">
+  <button id="bBoard">board ▸</button>
+  <button id="bShift">shift ▸</button>
+  <button id="bConj">conjure ▸</button>
+  <button id="bDis" class="dismiss">dismiss</button>
+  <input id="cmd" placeholder='try: board waves · shift hound · conjure torus · dismiss' autocomplete="off" spellcheck="false">
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const cv = document.getElementById("c");
+  const ctx = cv.getContext("2d");
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 1.5);
+    W = innerWidth; H = innerHeight;
+    cv.width = W * DPR; cv.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  addEventListener("resize", resize); resize();
+
+  // ---------- camera ----------
+  const cam = { yaw: -0.42, pitch: 0.30, dist: 440, ty: 58, f: 640 };
+  let lastInteract = performance.now();
+  let drag = null;
+  cv.addEventListener("pointerdown", (e) => {
+    drag = { x: e.clientX, y: e.clientY };
+    cv.classList.add("dragging");
+    cv.setPointerCapture(e.pointerId);
+    lastInteract = performance.now();
+  });
+  cv.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    cam.yaw += (e.clientX - drag.x) * 0.005;
+    cam.pitch = Math.max(-0.02, Math.min(1.05, cam.pitch + (e.clientY - drag.y) * 0.004));
+    drag = { x: e.clientX, y: e.clientY };
+    lastInteract = performance.now();
+  });
+  cv.addEventListener("pointerup", () => { drag = null; cv.classList.remove("dragging"); });
+  cv.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    cam.dist = Math.max(190, Math.min(950, cam.dist + e.deltaY * 0.5));
+    lastInteract = performance.now();
+  }, { passive: false });
+
+  let sy_, cy_, sp_, cp_;
+  function camFrame() {
+    sy_ = Math.sin(cam.yaw); cy_ = Math.cos(cam.yaw);
+    sp_ = Math.sin(cam.pitch); cp_ = Math.cos(cam.pitch);
+  }
+  function project(x, y, z, out) {
+    const x1 = x * cy_ - z * sy_;
+    const z1 = x * sy_ + z * cy_;
+    const y1 = y - cam.ty;
+    const y2 = y1 * cp_ - z1 * sp_;
+    const z2 = y1 * sp_ + z1 * cp_ + cam.dist;
+    if (z2 < 42) return false;
+    const s = cam.f / z2;
+    out.x = W / 2 + x1 * s;
+    out.y = H / 2 - y2 * s;
+    out.s = s; out.z = z2;
+    return true;
+  }
+  const P1 = {}, P2 = {};
+
+  // ---------- glyph batch ----------
+  const KANA = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789$+*=";
+  const rc = () => KANA[(Math.random() * KANA.length) | 0];
+  const PAL = [[41, 255, 106], [216, 255, 224], [245, 196, 83], [22, 124, 62]];
+  const colCache = new Map();
+  function colStr(c, a) {
+    const k = c * 32 + Math.round(a * 20);
+    let s = colCache.get(k);
+    if (!s) {
+      const p = PAL[c];
+      s = `rgba(${p[0]},${p[1]},${p[2]},${(Math.round(a * 20) / 20).toFixed(2)})`;
+      colCache.set(k, s);
+    }
+    return s;
+  }
+  const batch = [];
+  function glyph(x, y, z, size, a, ch, c) {
+    if (a < 0.02) return;
+    if (!project(x, y, z, P1)) return;
+    const fog = Math.max(0, Math.min(1, 1 - (P1.z - 620) / 900));
+    if (fog <= 0.02) return;
+    batch.push({ x: P1.x, y: P1.y, z: P1.z, px: Math.max(4, Math.min(28, P1.s * size)), a: a * fog, ch, c });
+  }
+  function line3(x1, y1, z1, x2, y2, z2, a, c) {
+    if (!project(x1, y1, z1, P1) || !project(x2, y2, z2, P2)) return;
+    const fog = Math.max(0, Math.min(1, 1 - ((P1.z + P2.z) / 2 - 620) / 900));
+    if (fog <= 0.02) return;
+    ctx.strokeStyle = colStr(c, a * fog);
+    ctx.beginPath(); ctx.moveTo(P1.x, P1.y); ctx.lineTo(P2.x, P2.y); ctx.stroke();
+  }
+
+  // ---------- rain ----------
+  const RAIN_N = reduced ? 70 : 190;
+  const rain = [];
+  for (let i = 0; i < RAIN_N; i++) {
+    const r = 130 + Math.sqrt(Math.random()) * 590;
+    const th = Math.random() * Math.PI * 2;
+    rain.push({
+      x: Math.cos(th) * r, z: Math.sin(th) * r,
+      y: Math.random() * 280,
+      v: 45 + Math.random() * 90,
+      n: 5 + (Math.random() * 4) | 0,
+    });
+  }
+
+  // ---------- shapeshifter ----------
+  const N = 760;
+  const parts = [];
+  for (let i = 0; i < N; i++) {
+    parts.push({
+      x: (Math.random() - 0.5) * 260, y: Math.random() * 160, z: (Math.random() - 0.5) * 260,
+      tx: 0, ty: 0, tz: 0, u: 0, v: 0,
+      ch: rc(), chT: Math.random() * 1000,
+      delay: 0, c: Math.random() < 0.08 ? 1 : 0,
+    });
+  }
+
+  function sampleSegs(segs, out) {
+    let total = 0;
+    for (const s of segs) { s.len = Math.hypot(s.b[0] - s.a[0], s.b[1] - s.a[1], s.b[2] - s.a[2]) || 1; total += s.len; }
+    let si = 0, acc = segs[0].len;
+    for (let i = 0; i < out.length; i++) {
+      const d = (i / out.length) * total;
+      while (d > acc && si < segs.length - 1) { si++; acc += segs[si].len; }
+      const s = segs[si];
+      const t = 1 - (acc - d) / s.len;
+      out[i] = [
+        s.a[0] + (s.b[0] - s.a[0]) * t + (Math.random() - 0.5) * 3,
+        s.a[1] + (s.b[1] - s.a[1]) * t + (Math.random() - 0.5) * 3,
+        s.a[2] + (s.b[2] - s.a[2]) * t + (Math.random() - 0.5) * 3,
+      ];
+    }
+  }
+  function circleSegs(cx, cy, r, z, n) {
+    const segs = [];
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2, b = ((i + 1) / n) * Math.PI * 2;
+      segs.push({ a: [cx + r * Math.cos(a), cy + r * Math.sin(a), z], b: [cx + r * Math.cos(b), cy + r * Math.sin(b), z] });
+    }
+    return segs;
+  }
+
+  const FORMS = {
+    eye() {
+      const pts = new Array(N);
+      for (let i = 0; i < N; i++) {
+        const r = i / N;
+        if (r < 0.42) { // almond outline
+          const x = -66 + Math.random() * 132;
+          const h = 30 * Math.pow(Math.max(0, 1 - (x / 66) * (x / 66)), 0.65);
+          pts[i] = [x, 58 + (Math.random() < 0.5 ? h : -h), (Math.random() - 0.5) * 3];
+        } else if (r < 0.74) { // iris ring
+          const a = Math.random() * Math.PI * 2;
+          pts[i] = [17 * Math.cos(a), 58 + 17 * Math.sin(a), 2];
+        } else if (r < 0.88) { // slit
+          pts[i] = [(Math.random() - 0.5) * 3, 42 + Math.random() * 32, 4];
+        } else { // inner shimmer
+          const x = (Math.random() - 0.5) * 110;
+          const h = 26 * Math.pow(Math.max(0, 1 - (x / 66) * (x / 66)), 0.65);
+          pts[i] = [x, 58 + (Math.random() - 0.5) * 2 * h, -2];
+        }
+      }
+      return pts;
+    },
+    figure() {
+      const segs = [
+        ...circleSegs(0, 96, 9, 0, 10),
+        { a: [0, 86, 0], b: [0, 48, 0] },
+        { a: [-8, 80, 0], b: [8, 80, 0] },
+        { a: [0, 79, 0], b: [-22, 56, 0] },
+        { a: [0, 79, 0], b: [22, 56, 0] },
+        { a: [0, 48, 0], b: [-13, 2, 0] },
+        { a: [0, 48, 0], b: [13, 2, 0] },
+      ];
+      const pts = new Array(N); sampleSegs(segs, pts); return pts;
+    },
+    hound() {
+      const segs = [...circleSegs(0, 40, 1, 0, 4)];
+      for (let i = 0; i < 14; i++) { // body ellipse
+        const a = (i / 14) * Math.PI * 2, b = ((i + 1) / 14) * Math.PI * 2;
+        segs.push({ a: [32 * Math.cos(a), 40 + 12 * Math.sin(a), 0], b: [32 * Math.cos(b), 40 + 12 * Math.sin(b), 0] });
+      }
+      for (const sx of [-20, 20]) for (const sz of [-7, 7])
+        segs.push({ a: [sx, 28, sz], b: [sx + 3, 2, sz] });
+      segs.push({ a: [26, 46, 0], b: [38, 54, 0] });          // neck
+      segs.push(...circleSegs(42, 56, 8, 0, 8));               // head
+      segs.push({ a: [48, 54, 0], b: [57, 51, 0] });           // muzzle
+      segs.push({ a: [40, 62, 0], b: [44, 69, 0] });           // ear
+      segs.push({ a: [-30, 46, 0], b: [-49, 60, 0] });         // tail
+      const pts = new Array(N); sampleSegs(segs, pts); return pts;
+    },
+    ghost() {
+      const pts = new Array(N);
+      for (let i = 0; i < N; i++) {
+        const r = i / N;
+        if (r < 0.4) { // dome
+          const a = Math.random() * Math.PI;
+          pts[i] = [26 * Math.cos(a), 56 + 27 * Math.sin(a), (Math.random() - 0.5) * 8];
+        } else if (r < 0.62) { // sides
+          const side = Math.random() < 0.5 ? -26 : 26;
+          pts[i] = [side, 24 + Math.random() * 32, (Math.random() - 0.5) * 8];
+        } else if (r < 0.86) { // wavy hem
+          const x = -26 + Math.random() * 52;
+          pts[i] = [x, 24 + 5 * Math.sin(x * 0.45), (Math.random() - 0.5) * 8];
+        } else { // eyes
+          const ex = Math.random() < 0.5 ? -9 : 9;
+          pts[i] = [ex + (Math.random() - 0.5) * 4, 62 + (Math.random() - 0.5) * 4, 6];
+        }
+      }
+      return pts;
+    },
+    wave() {
+      const pts = new Array(N);
+      for (let i = 0; i < N; i++)
+        pts[i] = [(Math.random() - 0.5) * 150, 40, (Math.random() - 0.5) * 84]; // y is dynamic
+      return pts;
+    },
+  };
+  const FORM_ORDER = ["eye", "figure", "hound", "ghost", "wave"];
+  let form = "eye";
+  function setForm(name) {
+    if (!FORMS[name]) return false;
+    form = name;
+    const pts = FORMS[name]();
+    const now = performance.now();
+    for (let i = 0; i < N; i++) {
+      const p = parts[i];
+      p.tx = pts[i][0]; p.ty = pts[i][1]; p.tz = pts[i][2];
+      p.u = p.tx; p.v = p.tz;
+      p.delay = now + Math.random() * 650;
+    }
+    caption(`⟨ shift · ${name} ⟩`);
+    return true;
+  }
+
+  // ---------- tableboard ----------
+  const BW = 46, BH = 24;
+  const BOARD_MODES = [null, "waves", "lissajous", "bars"];
+  const board = {
+    mode: null, alpha: 0, target: 0, dissolving: false,
+    buf: new Float32Array(BW * BH),
+    gold: new Float32Array(BW * BH),
+    rev: new Float32Array(BW * BH),
+    chs: new Array(BW * BH),
+    pos: new Array(BW * BH),
+    lx: 0, ly: 0,
+  };
+  {
+    const cx = -152, cy0 = 96, cz = -34, yawB = 0.55, cw = 3.4, chh = 3.6;
+    const rx = Math.cos(yawB), rz = -Math.sin(yawB);
+    for (let r = 0; r < BH; r++) for (let c = 0; c < BW; c++) {
+      const i = r * BW + c;
+      const off = (c - BW / 2) * cw;
+      board.pos[i] = [cx + rx * off, cy0 - r * chh, cz + rz * off];
+      board.rev[i] = Math.random() * 0.85;
+      board.chs[i] = rc();
+    }
+  }
+  function setBoard(mode) {
+    if (mode && !BOARD_MODES.includes(mode)) return false;
+    if (mode) {
+      board.mode = mode; board.target = 1; board.dissolving = false;
+      caption(`⟨ board · ${mode} ⟩`);
+    } else if (board.mode) {
+      board.target = 0; board.dissolving = true;
+      caption("⟨ board released ⟩", true);
+    }
+    return true;
+  }
+  function stamp(buf, c, y, e) {
+    for (let dr = -1; dr <= 1; dr++) {
+      const r = Math.round(y) + dr;
+      if (r < 1 || r >= BH - 1 || c < 1 || c >= BW - 1) continue;
+      const d = Math.abs(y - r);
+      buf[r * BW + c] = Math.min(1, buf[r * BW + c] + e * Math.exp(-d * d / 0.45));
+    }
+  }
+  function boardUpdate(T) {
+    const { buf, gold } = board;
+    for (let i = 0; i < buf.length; i++) { buf[i] *= 0.80; gold[i] *= 0.80; }
+    const mid = BH / 2;
+    if (board.mode === "waves") {
+      for (let c = 1; c < BW - 1; c++) {
+        const y1 = mid + 6.5 * Math.sin(c * 0.26 - T * 2.4);
+        const y2 = mid + 4.0 * Math.sin(c * 0.15 + T * 1.5 + 1.3);
+        stamp(buf, c, y1, 0.9);
+        stamp(buf, c, y2, 0.55);
+        stamp(gold, c, mid + ((y1 - mid) + (y2 - mid)) * 0.55, 0.7);
+      }
+    } else if (board.mode === "lissajous") {
+      for (let i = 0; i < buf.length; i++) buf[i] *= 0.985; // slower phosphor decay
+      const del = T * 0.11;
+      for (let k = 0; k < 7; k++) {
+        const t = T * 1.7 + k * 0.02;
+        const x = (Math.sin(3 * t) * 0.5 + 0.5) * (BW - 4) + 2;
+        const y = (Math.sin(2 * t + del) * 0.5 + 0.5) * (BH - 4) + 2;
+        stamp(buf, Math.round(x), y, 0.85);
+      }
+    } else if (board.mode === "bars") {
+      const nb = 11;
+      for (let k = 0; k < nb; k++) {
+        const h = (0.25 + 0.72 * Math.abs(Math.sin(T * (0.9 + k * 0.13) + k * 1.7))) * (BH - 5);
+        const c0 = 2 + k * 4;
+        for (let dc = 0; dc < 3; dc++) {
+          const c = c0 + dc;
+          if (c >= BW - 1) continue;
+          for (let r = 0; r < h; r++) {
+            const row = BH - 2 - r;
+            if (row < 1) break;
+            buf[row * BW + c] = Math.min(1, buf[row * BW + c] + 0.45);
+          }
+          const cap = BH - 2 - Math.round(h);
+          if (cap >= 1) gold[cap * BW + c] = 1;
+        }
+      }
+    }
+  }
+
+  // ---------- conjured wireframe forms ----------
+  function cubeShape() {
+    const s = 30, v = [];
+    for (const a of [-s, s]) for (const b of [-s, s]) for (const c of [-s, s]) v.push([a, b, c]);
+    const e = [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+    return { v, e };
+  }
+  function torusShape() {
+    const v = [], e = [], NI = 12, NJ = 8, R = 32, r = 12;
+    for (let i = 0; i < NI; i++) for (let j = 0; j < NJ; j++) {
+      const th = (i / NI) * Math.PI * 2, ph = (j / NJ) * Math.PI * 2;
+      v.push([(R + r * Math.cos(ph)) * Math.cos(th), r * Math.sin(ph), (R + r * Math.cos(ph)) * Math.sin(th)]);
+      e.push([i * NJ + j, i * NJ + ((j + 1) % NJ)]);
+      e.push([i * NJ + j, ((i + 1) % NI) * NJ + j]);
+    }
+    return { v, e };
+  }
+  const SHAPES = { cube: cubeShape(), torus: torusShape() };
+  const CONJ_ORDER = [null, "cube", "torus"];
+  const conj = { shape: null, alpha: 0, target: 0, dissolving: false, chs: [] };
+  function setConjure(name) {
+    if (name && !SHAPES[name]) return false;
+    if (name) {
+      conj.shape = name; conj.target = 1; conj.dissolving = false;
+      conj.chs = SHAPES[name].v.map(rc);
+      caption(`⟨ conjure · ${name} ⟩`);
+    } else if (conj.shape) {
+      conj.target = 0; conj.dissolving = true;
+      caption("⟨ form released ⟩", true);
+    }
+    return true;
+  }
+
+  function dismissAll() {
+    let any = false;
+    if (board.mode && board.target > 0) { setBoard(null); any = true; }
+    if (conj.shape && conj.target > 0) { setConjure(null); any = true; }
+    caption(any ? "⟨ dissolved — gold ⟩" : "⟨ the field is already quiet ⟩", any);
+  }
+
+  // ---------- UI ----------
+  const capEl = document.getElementById("caption");
+  let capTimer = 0;
+  function caption(text, gold) {
+    capEl.textContent = text;
+    capEl.classList.toggle("gold", !!gold);
+    capEl.classList.add("on");
+    clearTimeout(capTimer);
+    capTimer = setTimeout(() => capEl.classList.remove("on"), 3200);
+  }
+  const stateEl = document.getElementById("state");
+  function stateLine() {
+    stateEl.innerHTML =
+      `form <b>${form}</b> · board <b>${board.target > 0 ? board.mode : "—"}</b> · conjured <b>${conj.target > 0 ? conj.shape : "—"}</b>`;
+  }
+
+  function cmd(s) {
+    s = s.trim().toLowerCase();
+    if (!s) return;
+    const w = s.split(/\s+/);
+    const alias = { liss: "lissajous", spectrum: "bars", table: "board", tableboard: "board", orb: "torus" };
+    const norm = w.map((x) => alias[x] || x);
+    if (norm.includes("dismiss") || norm.includes("clear")) { dismissAll(); }
+    else if (norm[0] === "board" || norm[0] === "summon") {
+      const m = norm.find((x) => BOARD_MODES.includes(x));
+      setBoard(m || board.mode || "waves");
+    }
+    else if (BOARD_MODES.includes(norm[0])) setBoard(norm[0]);
+    else if (norm[0] === "shift") { if (!setForm(norm[1])) caption("⟨ forms: eye · figure · hound · ghost · wave ⟩"); }
+    else if (FORM_ORDER.includes(norm[0])) setForm(norm[0]);
+    else if (norm[0] === "conjure") { if (!setConjure(norm[1] || "cube")) caption("⟨ conjure: cube · torus ⟩"); }
+    else if (SHAPES[norm[0]]) setConjure(norm[0]);
+    else caption("⟨ try: board waves · shift hound · conjure torus · dismiss ⟩");
+    stateLine();
+  }
+
+  document.getElementById("bBoard").onclick = () => {
+    const cur = board.target > 0 ? BOARD_MODES.indexOf(board.mode) : 0;
+    const next = BOARD_MODES[(cur + 1) % BOARD_MODES.length];
+    setBoard(next); stateLine();
+  };
+  document.getElementById("bShift").onclick = () => {
+    setForm(FORM_ORDER[(FORM_ORDER.indexOf(form) + 1) % FORM_ORDER.length]); stateLine();
+  };
+  document.getElementById("bConj").onclick = () => {
+    const cur = conj.target > 0 ? CONJ_ORDER.indexOf(conj.shape) : 0;
+    setConjure(CONJ_ORDER[(cur + 1) % CONJ_ORDER.length]); stateLine();
+  };
+  document.getElementById("bDis").onclick = () => { dismissAll(); stateLine(); };
+  const input = document.getElementById("cmd");
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { cmd(input.value); input.value = ""; }
+  });
+
+  // ---------- init ----------
+  setForm("eye");
+  caption("⟨ the field is quiet — nothing appears unless you ask ⟩");
+  stateLine();
+
+  // ---------- main loop ----------
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const T = now / 1000;
+
+    if (!reduced && now - lastInteract > 6000) cam.yaw += 0.02 * dt;
+    camFrame();
+
+    ctx.fillStyle = "#020703";
+    ctx.fillRect(0, 0, W, H);
+    ctx.lineWidth = 1;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    batch.length = 0;
+
+    // grid
+    for (let g = -600; g <= 600; g += 60) {
+      const a = 0.10 * (1 - Math.abs(g) / 900);
+      line3(g, 0, -600, g, 0, 600, a, 3);
+      line3(-600, 0, g, 600, 0, g, a, 3);
+    }
+
+    // rain
+    for (const d of rain) {
+      d.y -= d.v * dt;
+      if (d.y < -10) { d.y = 240 + Math.random() * 90; }
+      for (let i = 0; i < d.n; i++) {
+        const y = d.y + i * 13;
+        if (y > 320) break;
+        glyph(d.x, y, d.z, 10, i === 0 ? 0.85 : 0.4 * (1 - i / d.n), rc(), i === 0 ? 1 : 0);
+      }
+    }
+
+    // shapeshifter
+    const bob = form === "ghost" ? 5 * Math.sin(T * 1.6) : 0;
+    for (let i = 0; i < N; i++) {
+      const p = parts[i];
+      if (form === "wave") p.ty = 34 + 15 * Math.sin(p.u * 0.075 + T * 1.9) + 7 * Math.sin(p.v * 0.11 - T * 1.3);
+      if (now > p.delay) {
+        const k = 1 - Math.pow(0.925, dt * 60);
+        p.x += (p.tx - p.x) * k;
+        p.y += (p.ty + bob - p.y) * k;
+        p.z += (p.tz - p.z) * k;
+      }
+      const wob = Math.sin(T * 2 + i * 1.7) * 0.5;
+      if (now > p.chT) { p.ch = rc(); p.chT = now + 250 + Math.random() * 900; }
+      glyph(p.x + wob, p.y, p.z, 9, p.c === 1 ? 0.95 : 0.72, p.ch, p.c);
+    }
+
+    // board
+    board.alpha += (board.target - board.alpha) * (1 - Math.pow(0.9, dt * 60));
+    if (board.alpha > 0.01 && board.mode) {
+      if (board.target > 0) boardUpdate(T);
+      const rise = board.dissolving ? (1 - board.alpha) * 34 : 0;
+      const goldAll = board.dissolving;
+      for (let i = 0; i < BW * BH; i++) {
+        const r = (i / BW) | 0, c = i % BW;
+        const reveal = Math.max(0, Math.min(1, (board.alpha - board.rev[i]) * 6));
+        if (reveal <= 0) continue;
+        const [px, py, pz] = board.pos[i];
+        const border = r === 0 || r === BH - 1 || c === 0 || c === BW - 1;
+        if (Math.random() < 0.01) board.chs[i] = rc();
+        if (border) {
+          const corner = (r === 0 || r === BH - 1) && (c === 0 || c === BW - 1);
+          glyph(px, py + rise, pz, 8, (corner ? 0.85 : 0.3) * reveal, corner ? "+" : board.chs[i], goldAll ? 2 : (corner ? 1 : 3));
+          continue;
+        }
+        const b = board.buf[i], gd = board.gold[i];
+        if (b > 0.05) glyph(px, py + rise, pz, 8, Math.min(1, b) * reveal, board.chs[i], goldAll ? 2 : (b > 0.8 ? 1 : 0));
+        if (gd > 0.05) glyph(px, py + rise, pz + (board.pos[0][2] < 0 ? 1 : -1), 8, Math.min(1, gd) * reveal, board.chs[i], 2);
+      }
+    } else if (board.alpha <= 0.01 && board.dissolving) { board.mode = null; board.dissolving = false; }
+
+    // conjured wireframe
+    conj.alpha += (conj.target - conj.alpha) * (1 - Math.pow(0.92, dt * 60));
+    if (conj.alpha > 0.01 && conj.shape) {
+      const sh = SHAPES[conj.shape];
+      const rot = T * 0.5, tilt = 0.42;
+      const cr = Math.cos(rot), sr = Math.sin(rot), ct = Math.cos(tilt), st = Math.sin(tilt);
+      const rise = conj.dissolving ? (1 - conj.alpha) * 34 : 0;
+      const CX = 152, CY = 62 + rise, CZ = -26;
+      const tv = sh.v.map(([x, y, z]) => {
+        const x1 = x * cr - z * sr, z1 = x * sr + z * cr;
+        const y2 = y * ct - z1 * st, z2 = y * st + z1 * ct;
+        return [CX + x1, CY + y2, CZ + z2];
+      });
+      const c = conj.dissolving ? 2 : 0;
+      for (const [a, b] of sh.e)
+        line3(tv[a][0], tv[a][1], tv[a][2], tv[b][0], tv[b][1], tv[b][2], 0.22 * conj.alpha, c);
+      for (let i = 0; i < tv.length; i++)
+        glyph(tv[i][0], tv[i][1], tv[i][2], 8, 0.9 * conj.alpha, conj.chs[i], conj.dissolving ? 2 : 1);
+    } else if (conj.alpha <= 0.01 && conj.dissolving) { conj.shape = null; conj.dissolving = false; }
+
+    // draw batch, far to near
+    batch.sort((a, b) => b.z - a.z);
+    let lastPx = -1, lastFill = "";
+    for (const g of batch) {
+      const px = Math.round(g.px);
+      if (px !== lastPx) { ctx.font = px + 'px "JetBrains Mono", monospace'; lastPx = px; }
+      const f = colStr(g.c, Math.min(1, g.a));
+      if (f !== lastFill) { ctx.fillStyle = f; lastFill = f; }
+      ctx.fillText(g.ch, g.x, g.y);
+    }
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>

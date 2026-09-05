@@ -1,0 +1,2328 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Field</title>
+<style>
+  /* phosphor palette — from the approved concept demo v5 */
+  :root {
+    --bg: #020703;
+    --phosphor: #29ff6a;
+    --bright: #d8ffe0;
+    --gold: #f5c453;
+    --dim: #167c3e;
+    --hud: #7fdc9a;
+    --panel: rgba(4, 18, 10, 0.82);
+  }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--hud);
+    font-family: "Cascadia Mono", Consolas, ui-monospace, Menlo, monospace;
+    overflow: hidden;
+  }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #c.dragging { cursor: grabbing; }
+
+  #hud {
+    position: fixed; top: 14px; left: 16px; pointer-events: none;
+    text-shadow: 0 0 8px rgba(41, 255, 106, 0.35);
+  }
+  #hud h1 {
+    margin: 0; font-size: 13px; font-weight: 700;
+    letter-spacing: 0.34em; color: var(--bright); text-transform: uppercase;
+  }
+  #hud p { margin: 4px 0 0; font-size: 10.5px; color: var(--dim); letter-spacing: 0.06em; }
+
+  #state {
+    position: fixed; top: 14px; right: 16px; pointer-events: none;
+    font-size: 10.5px; color: var(--hud); letter-spacing: 0.08em;
+    text-align: right; text-shadow: 0 0 8px rgba(41, 255, 106, 0.3);
+  }
+  #state b { color: var(--bright); font-weight: 400; }
+  #state b.lost { color: var(--gold); }
+
+  #caption {
+    position: fixed; left: 50%; bottom: 74px; transform: translateX(-50%);
+    font-size: 13px; color: var(--bright); letter-spacing: 0.1em;
+    text-shadow: 0 0 12px rgba(41, 255, 106, 0.55);
+    opacity: 0; transition: opacity 0.45s ease; pointer-events: none;
+    /* wrap into a paragraph, never run off the screen edge (his call,
+       2026-08-23: "it gets too wide... it disappears") — anchored at the
+       bottom so long text grows UP over the field */
+    white-space: normal; max-width: min(78vw, 940px);
+    text-align: center; line-height: 1.55;
+  }
+  #caption.on { opacity: 1; }
+  #caption.gold { color: var(--gold); text-shadow: 0 0 12px rgba(245, 196, 83, 0.55); }
+
+  #console {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    display: flex; gap: 8px; align-items: center;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-top: 1px solid rgba(22, 124, 62, 0.55);
+    backdrop-filter: blur(3px);
+  }
+  #console button {
+    font: 400 11.5px "Cascadia Mono", Consolas, ui-monospace, monospace;
+    color: var(--phosphor); background: transparent;
+    border: 1px solid rgba(41, 255, 106, 0.4); border-radius: 3px;
+    padding: 6px 11px; cursor: pointer; letter-spacing: 0.06em;
+    transition: background 0.15s, color 0.15s;
+    white-space: nowrap;
+  }
+  #console button:hover { background: rgba(41, 255, 106, 0.12); color: var(--bright); }
+  #console button:focus-visible { outline: 1px solid var(--bright); outline-offset: 2px; }
+  #console button.dismiss { color: var(--gold); border-color: rgba(245, 196, 83, 0.4); }
+  #console button.dismiss:hover { background: rgba(245, 196, 83, 0.1); color: var(--gold); }
+  #cmd {
+    flex: 1; min-width: 60px;
+    font: 400 12px "Cascadia Mono", Consolas, ui-monospace, monospace;
+    color: var(--bright); background: rgba(2, 7, 3, 0.6);
+    border: 1px solid rgba(22, 124, 62, 0.6); border-radius: 3px;
+    padding: 6px 10px; letter-spacing: 0.04em;
+  }
+  #cmd::placeholder { color: rgba(88, 168, 120, 0.55); }
+  #cmd:focus { outline: none; border-color: rgba(41, 255, 106, 0.6); }
+</style>
+<script type="importmap">
+  { "imports": { "three": "/vendor/three.module.js", "three/addons/": "/vendor/addons/" } }
+</script>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="hud">
+  <h1>The Field</h1>
+  <p>the shapeshifter · drag to orbit · wheel to zoom · double-click to focus · WASD to fly · space = voice</p>
+</div>
+<div id="state"></div>
+<div id="caption"></div>
+
+<div id="console">
+  <button id="bBoard">board ▸</button>
+  <button id="bShift">shift ▸</button>
+  <button id="bConj">conjure ▸</button>
+  <button id="bMic">voice ●</button>
+  <button id="bDis" class="dismiss">dismiss</button>
+  <input id="cmd" placeholder='try: board waves · shift hound · conjure torus · dismiss' autocomplete="off" spellcheck="false">
+</div>
+
+<script type="module">
+"use strict";
+// The Field — the real engine (spec B §3): glyph-atlas point shader, bloom,
+// fog, shader ground grid, and TRUE-3D forms — real glTF meshes (Fox,
+// Mage; licenses in assets/LICENSES.md) surface-sampled into glyph
+// particle bodies. Scene truth lives in server.js; this page only renders
+// what arrives over SSE — even its own console posts ops back to the server.
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshSurfaceSampler } from "three/addons/math/MeshSurfaceSampler.js";
+
+// ---------- key + caption -----------------------------------------------------
+const KEY = new URLSearchParams(location.search).get("key") || "";
+const capEl = document.getElementById("caption");
+let capTimer = 0;
+function caption(text, gold) {
+  capEl.textContent = text;
+  capEl.classList.toggle("gold", !!gold);
+  capEl.classList.add("on");
+  clearTimeout(capTimer);
+  capTimer = setTimeout(() => capEl.classList.remove("on"), 3200);
+}
+if (!KEY) caption("⟨ no key — open the address that eye.sh field url prints ⟩", true);
+
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// ---------- palette + glyphs ---------------------------------------------------
+const KANA = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789$+*=";
+const NG = KANA.length;
+const ri = () => (Math.random() * NG) | 0;
+const PLUS = KANA.indexOf("+");
+// 0 phosphor · 1 bright · 2 gold · 3 dim — color is status (green working,
+// gold done/dissolved); indices shared with the demo and the MVP
+const PAL = [
+  [41 / 255, 255 / 255, 106 / 255],
+  [216 / 255, 255 / 255, 224 / 255],
+  [245 / 255, 196 / 255, 83 / 255],
+  [22 / 255, 124 / 255, 62 / 255],
+];
+
+// glyph atlas baked at runtime: halfwidth katakana + digits, white on an 8×8
+// grid — the point shader picks a cell per particle and tints it.
+// MS Gothic first: Consolas has NO katakana (hard-won fact, RUNBOOK).
+const ATLAS_COLS = 8;
+function makeAtlas() {
+  const cell = 64;
+  const cv = document.createElement("canvas");
+  cv.width = ATLAS_COLS * cell;
+  cv.height = ATLAS_COLS * cell;
+  const g = cv.getContext("2d");
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillStyle = "#fff";
+  g.font = '48px "MS Gothic", "Yu Gothic", "Noto Sans JP", monospace';
+  for (let i = 0; i < NG; i++)
+    g.fillText(KANA[i], (i % ATLAS_COLS) * cell + cell / 2, ((i / ATLAS_COLS) | 0) * cell + cell / 2);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter; // no mips — they bleed across atlas cells
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
+
+// one shader for every glyph system: additive point sprites sampling the
+// atlas, per-point glyph/alpha/tint/size, depth fog matched to the scene fog,
+// uRise = gold-dissolve drift for the whole system
+function glyphMaterial(tex) {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      atlas: { value: tex },
+      uRise: { value: 0 },
+      uDpr: { value: 1 },
+    },
+    vertexShader: `
+      attribute float glyph;
+      attribute float alpha;
+      attribute vec3 tint;
+      attribute float gsize;
+      uniform float uRise;
+      uniform float uDpr;
+      varying float vGlyph;
+      varying float vAlpha;
+      varying vec3 vTint;
+      void main() {
+        vec3 p = position;
+        p.y += uRise;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        float depth = max(0.001, -mv.z);
+        float fog = clamp(1.0 - (depth - 700.0) / 1100.0, 0.0, 1.0);
+        vGlyph = glyph;
+        vTint = tint;
+        vAlpha = alpha * fog;
+        gl_PointSize = clamp(gsize * 700.0 / depth, 3.0, 46.0) * uDpr;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform sampler2D atlas;
+      varying float vGlyph;
+      varying float vAlpha;
+      varying vec3 vTint;
+      void main() {
+        if (vAlpha < 0.015) discard;
+        float col = mod(vGlyph, ${ATLAS_COLS}.0);
+        float row = floor(vGlyph / ${ATLAS_COLS}.0);
+        vec2 uv = vec2(
+          (col + gl_PointCoord.x) / ${ATLAS_COLS}.0,
+          1.0 - (row + gl_PointCoord.y) / ${ATLAS_COLS}.0
+        );
+        float m = texture2D(atlas, uv).a;
+        if (m < 0.04) discard;
+        gl_FragColor = vec4(vTint, vAlpha * m);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+}
+
+function makeGlyphs(count, tex, parent) {
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(count * 3);
+  const glyph = new Float32Array(count);
+  const alpha = new Float32Array(count);
+  const tint = new Float32Array(count * 3);
+  const size = new Float32Array(count);
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute("glyph", new THREE.BufferAttribute(glyph, 1).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute("alpha", new THREE.BufferAttribute(alpha, 1).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute("tint", new THREE.BufferAttribute(tint, 3).setUsage(THREE.DynamicDrawUsage));
+  geo.setAttribute("gsize", new THREE.BufferAttribute(size, 1).setUsage(THREE.DynamicDrawUsage));
+  const mat = glyphMaterial(tex);
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  pts.renderOrder = 2;
+  parent.add(pts);
+  const sys = { geo, mat, pos, glyph, alpha, tint, size };
+  sys.setTint = (i, c) => {
+    tint[i * 3] = PAL[c][0];
+    tint[i * 3 + 1] = PAL[c][1];
+    tint[i * 3 + 2] = PAL[c][2];
+  };
+  sys.dirty = () => {
+    for (const a of ["position", "glyph", "alpha", "tint", "gsize"])
+      geo.attributes[a].needsUpdate = true;
+  };
+  return sys;
+}
+
+// ---------- renderer · scene · bloom -------------------------------------------
+const cv = document.getElementById("c");
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, powerPreference: "high-performance" });
+} catch (err) {
+  caption("⟨ no WebGL here — the field cannot take form ⟩", true);
+  throw err;
+}
+renderer.setClearColor(0x020703, 1);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x020703, 700, 1800); // matched in the glyph shader
+
+const camera = new THREE.PerspectiveCamera(55, 1, 1, 5000);
+const TARGET = new THREE.Vector3(0, 55, 0);
+camera.position.set(
+  TARGET.x + 460 * Math.cos(0.3) * Math.sin(-0.42),
+  TARGET.y + 460 * Math.sin(0.3),
+  TARGET.z + 460 * Math.cos(0.3) * Math.cos(-0.42)
+);
+const controls = new OrbitControls(camera, cv);
+controls.target.copy(TARGET);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.minDistance = 150;
+controls.maxDistance = 1100;
+controls.minPolarAngle = 0.12;
+controls.maxPolarAngle = 1.62;
+controls.autoRotateSpeed = 0.35;
+let lastInteract = performance.now();
+controls.addEventListener("start", () => {
+  lastInteract = performance.now();
+  cv.classList.add("dragging");
+});
+controls.addEventListener("end", () => {
+  lastInteract = performance.now();
+  cv.classList.remove("dragging");
+});
+
+// bloom is what makes phosphor real — everything glows a little, the bright
+// class glows hard, gold dissolves become embers
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.55, 0.4, 0.32);
+composer.addPass(bloom);
+
+const allSystems = [];
+let DPR = 1;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 1.75);
+  renderer.setPixelRatio(DPR);
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setPixelRatio(DPR);
+  composer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  for (const s of allSystems) s.mat.uniforms.uDpr.value = DPR;
+}
+addEventListener("resize", resize);
+
+// debug hooks — let a driver (Playwright) pause the simulation for a still
+// capture, and orbit deterministically:
+let __paused = false;
+window.__pause = (v) => { __paused = !!v; };
+
+// agent-directed look — glides HIS camera when an agent frames something for
+// him (his ask 2026-08-23: "change the camera angle to show me the graph").
+// His hand always wins: any pointer-down on the canvas cancels the glide.
+const look = { active: false, pos: new THREE.Vector3(), tgt: new THREE.Vector3() };
+function lookAtSpot(at, dist) {
+  const d = dist || 420;
+  let tgt = null, pos = null;
+  if (at === "board") {
+    tgt = B_CENTER.clone();
+    const n = new THREE.Vector3(Math.sin(B_YAW), 0, Math.cos(B_YAW)); // panel front
+    pos = tgt.clone().addScaledVector(n, Math.min(d, 340)).add(new THREE.Vector3(0, 20, 0));
+  } else if (at === "avatar") {
+    let cx = 0, cy = 0, cz = 0;
+    for (const p of parts) { cx += p.x; cy += p.y; cz += p.z; }
+    tgt = new THREE.Vector3(cx / N, cy / N, cz / N);
+  } else if (at === "conjured") {
+    tgt = conjGroup.position.clone();
+  } else if (at === "center") {
+    tgt = TARGET.clone();
+  } else if (at && typeof at === "object") {
+    tgt = new THREE.Vector3(+at.x || 0, +at.y || 0, +at.z || 0);
+  }
+  if (!tgt) return;
+  if (!pos) {
+    const dir = camera.position.clone().sub(controls.target).normalize();
+    pos = tgt.clone().addScaledVector(dir, d);
+  }
+  look.pos.copy(pos);
+  look.tgt.copy(tgt);
+  look.active = true;
+  caption(`⟨ look · ${typeof at === "string" ? at : "there"} ⟩`);
+}
+cv.addEventListener("pointerdown", () => { look.active = false; });
+
+// double-click focus (his ask 2026-08-23: "focus on an object or the board,
+// not only navigate around it") — retargets the ORBIT PIVOT to the landmark
+// nearest the clicked ray; camera stays put, so drag now revolves around it.
+cv.addEventListener("dblclick", (ev) => {
+  const nx = (ev.clientX / innerWidth) * 2 - 1;
+  const ny = -(ev.clientY / innerHeight) * 2 + 1;
+  const ray = new THREE.Vector3(nx, ny, 0.5).unproject(camera).sub(camera.position).normalize();
+  const spots = [];
+  {
+    let cx = 0, cy = 0, cz = 0;
+    for (const p of parts) { cx += p.x; cy += p.y; cz += p.z; }
+    spots.push(["avatar", new THREE.Vector3(cx / N, cy / N, cz / N)]);
+  }
+  if (board.target > 0 || tv.target > 0) spots.push(["board", B_CENTER.clone()]);
+  if (conj.target > 0) spots.push(["conjured", conjGroup.position.clone()]);
+  for (const [nm, s] of summons) if (!s.st.dissolving) spots.push([nm, s.centroid.clone()]);
+  let best = null, bestD = 150; // click must land reasonably near the object
+  for (const [nm, p] of spots) {
+    const toP = p.clone().sub(camera.position);
+    const t = toP.dot(ray);
+    if (t < 0) continue;
+    const d = toP.sub(ray.clone().multiplyScalar(t)).length();
+    if (d < bestD) { bestD = d; best = [nm, p]; }
+  }
+  if (!best) return;
+  // same action as the agent's look (his words): pivot glides to the object,
+  // and if it is far away the camera flies in with it
+  const away = camera.position.distanceTo(best[1]);
+  if (away > 700) {
+    const dir = camera.position.clone().sub(best[1]).normalize();
+    look.pos.copy(best[1]).addScaledVector(dir, 420);
+  } else {
+    look.pos.copy(camera.position);
+  }
+  look.tgt.copy(best[1]);
+  look.active = true;
+  caption(`⟨ focus · ${best[0]} ⟩`);
+});
+
+// WASD free movement — his ask 2026-08-23: "I should be able to move with
+// WASD around the field." Eye and orbit-target move together (walk feel);
+// Shift sprints, E/Q go up/down. Typing in the console never moves you.
+const keys = {};
+addEventListener("keydown", (e) => {
+  if (document.activeElement && document.activeElement.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if ("wasd".includes(k) || k === "shift") { keys[k] = true; look.active = false; }
+  // space = mic toggle (his ask 2026-08-23: "keep the click on the voice
+  // button but add the space for enable and disable"). preventDefault kills
+  // page scroll; blur any focused button so space can't double-fire it.
+  if (k === " ") {
+    e.preventDefault();
+    if (document.activeElement && document.activeElement.tagName === "BUTTON") document.activeElement.blur();
+    if (!e.repeat) document.getElementById("bMic").onclick();
+  }
+});
+addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
+
+// __cam(yaw, pitch, dist) in radians/world units around the target
+window.__cam = (yaw, pitch, dist) => {
+  camera.position.set(
+    TARGET.x + dist * Math.cos(pitch) * Math.sin(yaw),
+    TARGET.y + dist * Math.sin(pitch),
+    TARGET.z + dist * Math.cos(pitch) * Math.cos(yaw)
+  );
+  lastInteract = performance.now();
+  controls.update();
+};
+
+// ---------- ground: shader grid fading into fog --------------------------------
+const grid = (() => {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uBreath: { value: 1 } },
+    vertexShader: `
+      varying vec3 vW;
+      void main() {
+        vW = (modelMatrix * vec4(position, 1.0)).xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      uniform float uBreath;
+      varying vec3 vW;
+      void main() {
+        vec2 q = vW.xz / 60.0;                       // minor cell = 60
+        vec2 g = abs(fract(q - 0.5) - 0.5) / fwidth(q);
+        float minor = 1.0 - min(min(g.x, g.y), 1.0);
+        vec2 Q = vW.xz / 300.0;                      // major cell = 300
+        vec2 G = abs(fract(Q - 0.5) - 0.5) / fwidth(Q);
+        float major = 1.0 - min(min(G.x, G.y), 1.0);
+        float radial = 1.0 - smoothstep(220.0, 1500.0, length(vW.xz));
+        float glow = exp(-length(vW.xz) / 260.0) * 0.08; // faint pool under the shapeshifter
+        vec3 dim = vec3(0.086, 0.486, 0.243);
+        vec3 c = dim * (minor * 0.17 + major * 0.28) * radial * uBreath + dim * glow;
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(4200, 4200), mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.renderOrder = 0;
+  scene.add(mesh);
+  return mat;
+})();
+
+const atlas = makeAtlas();
+
+// ---------- glyph rain (3D columns, instanced points) ---------------------------
+const RAIN_N = reduced ? 90 : 260;
+const RAIN_LEN = 14;
+const rain = [];
+for (let i = 0; i < RAIN_N; i++) {
+  const r = 150 + Math.sqrt(Math.random()) * 620;
+  const th = Math.random() * Math.PI * 2;
+  rain.push({
+    x: Math.cos(th) * r,
+    z: Math.sin(th) * r,
+    y: Math.random() * 320,
+    v: 42 + Math.random() * 95,
+    n: 7 + ((Math.random() * 7) | 0),
+  });
+}
+const rainSys = makeGlyphs(RAIN_N * RAIN_LEN, atlas, scene);
+allSystems.push(rainSys);
+{
+  // static per-slot glyphs — flipped stochastically in the loop, not per frame
+  for (let k = 0; k < RAIN_N * RAIN_LEN; k++) rainSys.glyph[k] = ri();
+}
+
+// ---------- the shapeshifter — glyph mass with true-3D bodies -------------------
+const N = 9000;
+const parts = [];
+for (let i = 0; i < N; i++) {
+  parts.push({
+    x: (Math.random() - 0.5) * 300,
+    y: Math.random() * 190,
+    z: (Math.random() - 0.5) * 300,
+    tx: 0, ty: 0, tz: 0, u: 0, v: 0,
+    ch: ri(),
+    chT: Math.random() * 1000,
+    delay: 0,
+    c: 0,
+    base: 0.10 + Math.random() * 0.10, // per-particle brightness variation (dimmed 2026-08-19, his call: avatar too bright)
+    amp: 1, // builder-set damping (inner shimmer etc.)
+  });
+}
+const shifterSys = makeGlyphs(N, atlas, scene);
+allSystems.push(shifterSys);
+
+// driver hook (Playwright): world-space bbox of the current form's TARGETS
+window.__formBBox = () => {
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
+  for (const p of parts) {
+    if (p.tx < minX) minX = p.tx; if (p.tx > maxX) maxX = p.tx;
+    if (p.ty < minY) minY = p.ty; if (p.ty > maxY) maxY = p.ty;
+    if (p.tz < minZ) minZ = p.tz; if (p.tz > maxZ) maxZ = p.tz;
+  }
+  return { minX, maxX, minY, maxY, minZ, maxZ };
+};
+
+// -- form builders: each returns { pos: [ [x,y,z], ... N ], cls: Uint8Array } ---
+// cls 0 = phosphor body, 1 = bright accent
+
+// sample a prepared THREE.Mesh's surface into `count` points (world space)
+const _v = new THREE.Vector3();
+function sampleMesh(mesh, count, out, cls, from, brightP) {
+  mesh.updateWorldMatrix(true, false);
+  const sampler = new MeshSurfaceSampler(mesh).build();
+  for (let i = 0; i < count; i++) {
+    sampler.sample(_v);
+    _v.applyMatrix4(mesh.matrixWorld);
+    out[from + i] = [_v.x, _v.y, _v.z];
+    cls[from + i] = Math.random() < brightP ? 1 : 0;
+  }
+}
+
+// normalize a cloud in place: center x/z, feet on the ground, given height
+function normalizeCloud(pts, height, lift = 0) {
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
+  for (const p of pts) {
+    if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+    if (p[2] < minZ) minZ = p[2]; if (p[2] > maxZ) maxZ = p[2];
+  }
+  const s = height / Math.max(0.0001, maxY - minY);
+  const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+  for (const p of pts) {
+    p[0] = (p[0] - cx) * s;
+    p[1] = (p[1] - minY) * s + lift;
+    p[2] = (p[2] - cz) * s;
+  }
+}
+
+// glTF → glyph body: merge every mesh's surface into one cloud, orient the
+// long axis onto X (animals read side-on from the default camera), normalize
+function cloudFromGltf(gltf, count, { height = 90, rotY = 0, brightP = 0.07, damp = 1 } = {}) {
+  gltf.scene.updateMatrixWorld(true);
+  const meshes = [];
+  gltf.scene.traverse((o) => {
+    if (o.isMesh && o.geometry?.attributes?.position) meshes.push(o);
+  });
+  if (!meshes.length) return null;
+  const pts = new Array(count);
+  const cls = new Uint8Array(count);
+  const amp = new Float32Array(count).fill(damp); // compact meshes pack particles denser — damp keeps them readable
+  const per = Math.floor(count / meshes.length);
+  let at = 0;
+  for (let m = 0; m < meshes.length; m++) {
+    const n = m === meshes.length - 1 ? count - at : per;
+    sampleMesh(meshes[m], n, pts, cls, at, brightP);
+    at += n;
+  }
+  if (rotY) {
+    const c = Math.cos(rotY), s = Math.sin(rotY);
+    for (const p of pts) {
+      const x = p[0] * c + p[2] * s;
+      p[2] = -p[0] * s + p[2] * c;
+      p[0] = x;
+    }
+  }
+  normalizeCloud(pts, height);
+  return { pos: pts, cls, amp };
+}
+
+// ---------- living rigs — invisible skinned meshes drive the glyph targets -----
+// The .glb files ship real AnimationClips. We run them on the loaded (never
+// rendered) meshes and, every frame, push bone-transformed sample points into
+// the particles' TARGETS. The staggered lerp then chases them, so the morph
+// feel stays exactly as shipped — settled forms simply breathe. A body may be
+// ONE SkinnedMesh (Fox) or SEVERAL sharing a skeleton (KayKit) plus rigid
+// accessory meshes riding bones (hat, cape) — all sampled area-weighted.
+const _mA = new THREE.Matrix4();
+const _mB = new THREE.Matrix4();
+const _mPre = new THREE.Matrix4();
+const rigOut = new Float32Array(N * 3); // per-frame skinned targets, preallocated
+
+// total triangle area of a geometry (local units — these rigs are unscaled)
+function surfaceArea(geo) {
+  const posA = geo.attributes.position;
+  const index = geo.index;
+  const triCount = ((index ? index.count : posA.count) / 3) | 0;
+  const iAt = index ? (t, k) => index.getX(t * 3 + k) : (t, k) => t * 3 + k;
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  let acc = 0;
+  for (let t = 0; t < triCount; t++) {
+    vA.fromBufferAttribute(posA, iAt(t, 0));
+    vB.fromBufferAttribute(posA, iAt(t, 1));
+    vC.fromBufferAttribute(posA, iAt(t, 2));
+    acc += e1.subVectors(vB, vA).cross(e2.subVectors(vC, vA)).length() * 0.5;
+  }
+  return acc;
+}
+
+// area-weighted surface sample of a skinned mesh in BIND POSE, written into
+// the rig's shared buffers at [from, from+count). Per point we keep
+// q = bindMatrix * position plus the skin indices/weights of the
+// barycentric-dominant vertex (nearest-vertex weights — right at glyph scale).
+function sampleSkinned(mesh, count, q, sIdx, sWt, from) {
+  const geo = mesh.geometry;
+  const posA = geo.attributes.position;
+  const skiA = geo.attributes.skinIndex;
+  const skwA = geo.attributes.skinWeight;
+  const index = geo.index;
+  const triCount = ((index ? index.count : posA.count) / 3) | 0;
+  const iAt = index ? (t, k) => index.getX(t * 3 + k) : (t, k) => t * 3 + k;
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  const cdf = new Float64Array(triCount);
+  let acc = 0;
+  for (let t = 0; t < triCount; t++) {
+    vA.fromBufferAttribute(posA, iAt(t, 0));
+    vB.fromBufferAttribute(posA, iAt(t, 1));
+    vC.fromBufferAttribute(posA, iAt(t, 2));
+    acc += e1.subVectors(vB, vA).cross(e2.subVectors(vC, vA)).length() * 0.5;
+    cdf[t] = acc;
+  }
+  for (let j = 0; j < count; j++) {
+    const i = from + j;
+    const r = Math.random() * acc;
+    let lo = 0, hi = triCount - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (cdf[mid] < r) lo = mid + 1; else hi = mid; }
+    let u = Math.random(), v = Math.random();
+    if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    const w0 = 1 - u - v;
+    const a0 = iAt(lo, 0), a1 = iAt(lo, 1), a2 = iAt(lo, 2);
+    vA.fromBufferAttribute(posA, a0);
+    vB.fromBufferAttribute(posA, a1);
+    vC.fromBufferAttribute(posA, a2);
+    _v.set(
+      vA.x * w0 + vB.x * u + vC.x * v,
+      vA.y * w0 + vB.y * u + vC.y * v,
+      vA.z * w0 + vB.z * u + vC.z * v
+    ).applyMatrix4(mesh.bindMatrix);
+    q[i * 3] = _v.x; q[i * 3 + 1] = _v.y; q[i * 3 + 2] = _v.z;
+    const dom = w0 >= u && w0 >= v ? a0 : u >= v ? a1 : a2;
+    let sum = 0;
+    for (let k = 0; k < 4; k++) sum += skwA.getComponent(dom, k);
+    if (sum <= 0) sum = 1;
+    for (let k = 0; k < 4; k++) {
+      sIdx[i * 4 + k] = skiA.getComponent(dom, k);
+      sWt[i * 4 + k] = skwA.getComponent(dom, k) / sum;
+    }
+  }
+}
+
+// refresh per-bone matrices for the current pose, per skinned group:
+// G_b = norm · meshWorld · bindMatrixInverse · boneWorld_b · boneInverse_b —
+// three's own skinning formula with the cloud's fixed normalize folded in
+// (zero per-point matmuls)
+function poseRig(rig) {
+  rig.root.updateMatrixWorld(true);
+  for (const g of rig.groups) {
+    _mPre.multiplyMatrices(g.mesh.matrixWorld, g.mesh.bindMatrixInverse).premultiply(rig.norm);
+    const bones = g.mesh.skeleton.bones, inv = g.mesh.skeleton.boneInverses;
+    for (let b = 0; b < bones.length; b++) {
+      _mA.multiplyMatrices(bones[b].matrixWorld, inv[b]);
+      _mB.multiplyMatrices(_mPre, _mA);
+      g.G.set(_mB.elements, b * 16);
+    }
+  }
+}
+
+// transform every sample point of a rig into `out` (xyz triplets), CPU, tight
+// loops: skinned ranges through their group's bone palette, rigid ranges
+// through norm · meshWorld (accessories ride their bone via the scene graph)
+function skinPoints(rig, out) {
+  const { q, sIdx, sWt } = rig;
+  for (const g of rig.groups) {
+    const G = g.G, end = g.from + g.count;
+    for (let i = g.from; i < end; i++) {
+      const qx = q[i * 3], qy = q[i * 3 + 1], qz = q[i * 3 + 2];
+      const i4 = i * 4;
+      let x = 0, y = 0, z = 0;
+      for (let k = 0; k < 4; k++) {
+        const w = sWt[i4 + k];
+        if (w === 0) continue;
+        const o = sIdx[i4 + k] * 16;
+        x += w * (G[o] * qx + G[o + 4] * qy + G[o + 8] * qz + G[o + 12]);
+        y += w * (G[o + 1] * qx + G[o + 5] * qy + G[o + 9] * qz + G[o + 13]);
+        z += w * (G[o + 2] * qx + G[o + 6] * qy + G[o + 10] * qz + G[o + 14]);
+      }
+      out[i * 3] = x; out[i * 3 + 1] = y; out[i * 3 + 2] = z;
+    }
+  }
+  for (const rg of rig.rigids) {
+    const e = _mA.multiplyMatrices(rig.norm, rg.mesh.matrixWorld).elements;
+    const L = rg.local, end = rg.from + rg.count;
+    for (let i = rg.from, k = 0; i < end; i++, k += 3) {
+      const x = L[k], y = L[k + 1], z = L[k + 2];
+      out[i * 3] = e[0] * x + e[4] * y + e[8] * z + e[12];
+      out[i * 3 + 1] = e[1] * x + e[5] * y + e[9] * z + e[13];
+      out[i * 3 + 2] = e[2] * x + e[6] * y + e[10] * z + e[14];
+    }
+  }
+}
+
+// build a living rig from a loaded glTF: pick the idle clip, sample every
+// body mesh ONCE (N split across meshes by surface area), freeze the
+// normalize transform from the pose at t=0 so the form keeps the static
+// cloud's height and feet-on-grid placement. `attach` (RegExp on node names)
+// opts rigid accessory meshes IN (hat, cape — bone children that animate via
+// the scene graph); unmatched loose props (weapons, books) stay out.
+function makeRig(gltf, { clip: clipName, timeScale = 1, height = 90, rotY = 0, brightP = 0.07, damp = 1, attach = null, attachDamp = 1 } = {}) {
+  const units = [];
+  gltf.scene.traverse((o) => {
+    if (o.isSkinnedMesh) units.push({ mesh: o, sk: true });
+    else if (o.isMesh && attach && attach.test(o.name)) units.push({ mesh: o, sk: false });
+  });
+  const clips = gltf.animations || [];
+  const clip = (clipName && THREE.AnimationClip.findByName(clips, clipName)) || clips[0];
+  if (!units.some((u) => u.sk) || !clip) return null;
+  let total = 0;
+  for (const u of units) total += u.area = surfaceArea(u.mesh.geometry);
+  let at = 0; // N particles, split by area; the last unit takes the remainder
+  for (let k = 0; k < units.length; k++) {
+    const u = units[k];
+    u.from = at;
+    u.count = k === units.length - 1 ? N - at : Math.min(Math.round((N * u.area) / total), N - at);
+    at += u.count;
+  }
+  const rig = {
+    root: gltf.scene,
+    groups: [],
+    rigids: [],
+    q: new Float32Array(N * 3),
+    sIdx: new Uint16Array(N * 4),
+    sWt: new Float32Array(N * 4),
+    norm: new THREE.Matrix4(),
+  };
+  for (const u of units) {
+    if (!u.count) continue;
+    if (u.sk) {
+      sampleSkinned(u.mesh, u.count, rig.q, rig.sIdx, rig.sWt, u.from);
+      rig.groups.push({ mesh: u.mesh, G: new Float32Array(u.mesh.skeleton.bones.length * 16), from: u.from, count: u.count });
+    } else {
+      const sampler = new MeshSurfaceSampler(u.mesh).build();
+      const local = new Float32Array(u.count * 3);
+      for (let i = 0; i < u.count; i++) {
+        sampler.sample(_v);
+        local[i * 3] = _v.x; local[i * 3 + 1] = _v.y; local[i * 3 + 2] = _v.z;
+      }
+      rig.rigids.push({ mesh: u.mesh, local, from: u.from, count: u.count });
+    }
+  }
+  rig.mixer = new THREE.AnimationMixer(gltf.scene);
+  const action = rig.mixer.clipAction(clip);
+  action.timeScale = timeScale;
+  action.play();
+  rig.mixer.update(0.001); // settle the t≈0 pose before measuring
+  const flat = new Float32Array(N * 3);
+  poseRig(rig); // norm is still identity here
+  skinPoints(rig, flat);
+  if (rotY) { // orient before measuring, exactly like the static path
+    const c = Math.cos(rotY), sn = Math.sin(rotY);
+    for (let i = 0; i < N; i++) {
+      const x = flat[i * 3] * c + flat[i * 3 + 2] * sn;
+      flat[i * 3 + 2] = -flat[i * 3] * sn + flat[i * 3 + 2] * c;
+      flat[i * 3] = x;
+    }
+  }
+  let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
+  for (let i = 0; i < N; i++) {
+    const x = flat[i * 3], y = flat[i * 3 + 1], z = flat[i * 3 + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const s = height / Math.max(0.0001, maxY - minY);
+  rig.norm.makeScale(s, s, s);
+  rig.norm.multiply(_mA.makeTranslation(-(minX + maxX) / 2, -minY, -(minZ + maxZ) / 2));
+  if (rotY) rig.norm.multiply(_mB.makeRotationY(rotY));
+  // the builder's cloud = the normalized t≈0 pose; cached, sampled once
+  poseRig(rig);
+  skinPoints(rig, flat);
+  const pts = new Array(N);
+  const cls = new Uint8Array(N);
+  const amp = new Float32Array(N).fill(damp);
+  // accessories stack additively along flat surfaces (a hat brim seen
+  // edge-on) — attachDamp keeps them from flaring brighter than the body
+  for (const rg of rig.rigids) amp.fill(damp * attachDamp, rg.from, rg.from + rg.count);
+  for (let i = 0; i < N; i++) {
+    pts[i] = [flat[i * 3], flat[i * 3 + 1], flat[i * 3 + 2]];
+    cls[i] = Math.random() < brightP ? 1 : 0;
+  }
+  rig.built = { pos: pts, cls, amp, anim: { type: "rig", rig } };
+  return rig;
+}
+
+function updateRig(rig, dt) {
+  rig.mixer.update(dt);
+  poseRig(rig);
+  skinPoints(rig, rigOut);
+  for (let i = 0; i < N; i++) {
+    const p = parts[i];
+    p.tx = rigOut[i * 3];
+    p.ty = rigOut[i * 3 + 1];
+    p.tz = rigOut[i * 3 + 2];
+  }
+}
+
+// ---------- procedural idle life — metadata shared by eye/ghost -----------------
+// one form is live at a time, so the aux buffers are shared and preallocated:
+// auxK = particle kind, auxA/auxB/auxC = form-specific floats
+const auxK = new Uint8Array(N);
+const auxA = new Float32Array(N);
+const auxB = new Float32Array(N);
+const auxC = new Float32Array(N);
+
+// ---------- THE DARK EYE — the default form: a volumetric watcher ---------------
+// Structure (9000 pts): glyph-woven sclera sphere (latitude weave + traveling
+// shimmer), faint interior glow, a gaze-driven iris assembly (fiber annulus +
+// counter-rotating rings + bright rim around a VOID slit pupil), two eyelid
+// shells that SWEEP over the ball to blink (bright lash edge; covered
+// geometry dims — occlusion is faked, additive can't hide), three precessing
+// orbit rings + a drift of motes so the form has depth from every angle.
+// auxK: 0 sclera · 1 interior · 2 iris-static · 3 iris-ring · 4 slit rim ·
+// 5 lid top · 6 lid bottom · 7 orbit ring · 8 mote
+const EYE = {
+  CY: 58, R: 34, RL: 36.8, IR0: 30.5, // center height, ball R, lid R, iris offset
+  topOpen: 0.95, topShut: 1.82, // top lid polar extent (rad from the top pole)
+  botOpen: 0.55, botShut: 1.48, // bottom lid (rad from the bottom pole)
+};
+const EYE_ORBITS = [ // tilt basis, precession + glyph-flow speeds, node phase
+  { r: 50.0, sinT: Math.sin(1.15), cosT: Math.cos(1.15), prec: 0.10, flow: 0.30, ph: 0.0 },
+  { r: 58.0, sinT: Math.sin(-0.48), cosT: Math.cos(-0.48), prec: -0.065, flow: -0.24, ph: 2.1 },
+  { r: 41.5, sinT: Math.sin(0.14), cosT: Math.cos(0.14), prec: 0.03, flow: 0.55, ph: 4.4 },
+];
+const eyeDome = (rho) => 10 * (1 - (rho * rho) / 324); // cornea bulge height
+const eyeSlitR = (psi) => { // slit-pupil ellipse boundary, iris polar coords
+  const c = Math.cos(psi), s = Math.sin(psi);
+  return 35.7 / Math.sqrt(110.25 * c * c + 11.56 * s * s); // semi-axes 3.4 × 10.5
+};
+const eyeSS = (x) => x * x * x * (x * (6 * x - 15) + 10); // smootherstep
+const eyeOcc = (nc, cosTop, cosBot) => { // 0..1 — how deep under a lid a point is
+  let oc = (nc - cosTop) * 9;
+  const ob = (-nc - cosBot) * 9;
+  if (ob > oc) oc = ob;
+  return oc < 0 ? 0 : oc > 1 ? 1 : oc;
+};
+const eyeSt = {
+  lastT: -1,
+  yaw: 0, pitch: 0, tYaw: 0, tPitch: 0, nextSac: -1,
+  blinkT0: -9, blinkNext: -1,
+};
+// eye debug hooks (Playwright): force a blink / pin the gaze / release it
+window.__blink = () => { eyeSt.blinkNext = 0; };
+window.__gaze = (y, p) => { eyeSt.tYaw = y; eyeSt.tPitch = p; eyeSt.nextSac = 1e12; };
+window.__gazeFree = () => { eyeSt.nextSac = 0; };
+
+function updateEye(anim, T) {
+  const t0 = performance.now();
+  const st = eyeSt;
+  const dt = st.lastT < 0 ? 0.016 : Math.min(0.05, Math.max(0.0001, T - st.lastT));
+  st.lastT = T;
+  const { CY, RL, IR0 } = EYE;
+
+  // gaze — saccade-then-hold: eased jump to a plausible angle, then rest
+  if (st.nextSac < 0) st.nextSac = T + 1.4;
+  if (T >= st.nextSac) {
+    st.tYaw = (Math.random() * 2 - 1) * 0.40;
+    st.tPitch = -0.16 + Math.random() * 0.40;
+    st.nextSac = T + 1.4 + Math.random() * 3.4;
+    if (Math.random() < 0.3 && T - st.blinkT0 > 2.5) st.blinkNext = T; // blink on some saccades
+  }
+  const gk = 1 - Math.exp(-dt * 9);
+  st.yaw += (st.tYaw - st.yaw) * gk;
+  st.pitch += (st.tPitch - st.pitch) * gk;
+  const myaw = st.yaw + 0.009 * Math.sin(T * 1.3) + 0.005 * Math.sin(T * 3.7); // micro-tremor
+  const mpit = st.pitch + 0.007 * Math.sin(T * 1.9 + 1);
+
+  // blink — the lids SWEEP: close, hold (the morph lerp catches up), reopen
+  if (st.blinkNext < 0) st.blinkNext = T + 2.4;
+  if (T >= st.blinkNext) { st.blinkT0 = T; st.blinkNext = T + 3.8 + Math.random() * 4.8; }
+  const bu = T - st.blinkT0;
+  let cov = 0;
+  if (bu < 0.3) cov = eyeSS(bu / 0.3);
+  else if (bu < 0.5) cov = 1;
+  else if (bu < 0.86) cov = 1 - eyeSS((bu - 0.5) / 0.36);
+  const topExt = (EYE.topOpen + 0.03 * Math.sin(T * 0.5)) * (1 - cov) + EYE.topShut * cov;
+  const botExt = (EYE.botOpen + 0.02 * Math.sin(T * 0.5 + 2)) * (1 - cov) + EYE.botShut * cov;
+  const cosTop = Math.cos(topExt), cosBot = Math.cos(botExt);
+
+  // gaze basis (right / up / forward) + iris ring spins
+  const sy = Math.sin(myaw), cy = Math.cos(myaw), sp = Math.sin(mpit), cp = Math.cos(mpit);
+  const fx = sy * cp, fy = sp, fz = cy * cp;
+  const rxx = cy, rxz = -sy;
+  const upx = -sy * sp, upy = cp, upz = -cy * sp;
+  const spinO = T * -0.16, spinI = T * 0.30;
+
+  for (let i = 0; i < N; i++) {
+    const p = parts[i];
+    const k = auxK[i];
+    if (k === 0) { // sclera: static targets — shimmer wave + lid occlusion
+      p.amp = (0.30 + 0.50 * (0.5 + 0.5 * Math.sin(auxA[i] - T * 1.5 + auxC[i] * 0.3)))
+        * (1 - 0.85 * eyeOcc(auxB[i], cosTop, cosBot));
+    } else if (k === 5 || k === 6) { // eyelids: caps stretch over the ball
+      const ext = k === 5 ? topExt : botExt;
+      const th = 0.07 + auxB[i] * (ext - 0.07);
+      const stt = Math.sin(th), ctt = Math.cos(th);
+      p.tx = RL * stt * Math.cos(auxA[i]);
+      p.ty = CY + (k === 5 ? RL * ctt : -RL * ctt);
+      p.tz = RL * stt * Math.sin(auxA[i]);
+      p.amp = auxB[i] > 0.955
+        ? 0.55 + 0.35 * cov // the lash edge — brightens as it sweeps
+        : 0.40 + 0.14 * (0.5 + 0.5 * Math.sin(auxA[i] * 6 + auxC[i])) + 0.26 * cov;
+    } else if (k === 2 || k === 4) { // iris fibers/fill + slit rim: ride the gaze
+      const lx = auxA[i], ly = auxB[i], lz = auxC[i];
+      const wy = CY + upy * ly + fy * lz;
+      p.tx = rxx * lx + upx * ly + fx * lz;
+      p.ty = wy;
+      p.tz = rxz * lx + upz * ly + fz * lz;
+      const oc = eyeOcc((wy - CY) / 36, cosTop, cosBot);
+      p.amp = k === 4
+        ? 0.62 - 0.60 * oc // the slit rim snuffs out under the lid
+        : (0.30 + 0.22 * Math.sin(T * 2.2 + lx * 0.8 + ly * 0.6)) * (1 - 0.92 * oc);
+    } else if (k === 3) { // iris rings: counter-rotation about the gaze axis
+      const rho = auxB[i];
+      const a = auxA[i] + (rho > 14 ? spinO : spinI);
+      const lx = rho * Math.cos(a), ly = rho * Math.sin(a);
+      const lz = IR0 + eyeDome(rho);
+      const wy = CY + upy * ly + fy * lz;
+      p.tx = rxx * lx + upx * ly + fx * lz;
+      p.ty = wy;
+      p.tz = rxz * lx + upz * ly + fz * lz;
+      const oc = eyeOcc((wy - CY) / 36, cosTop, cosBot);
+      p.amp = ((rho > 14 ? 0.42 : 0.36) + 0.24 * Math.sin(a * 3 + T * 2 + auxC[i])) * (1 - 0.92 * oc);
+    } else if (k === 7) { // orbit rings: precessing planes, pulses ride the arc
+      const o = EYE_ORBITS[auxC[i] | 0];
+      const a = auxA[i] + o.flow * T;
+      const om = o.ph + o.prec * T;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const x0 = auxB[i] * ca, y0 = -auxB[i] * sa * o.sinT, z0 = auxB[i] * sa * o.cosT;
+      const co = Math.cos(om), so = Math.sin(om);
+      p.tx = x0 * co + z0 * so;
+      p.ty = CY + y0;
+      p.tz = -x0 * so + z0 * co;
+      const pulse = Math.sin(a * 2 - T * 1.6);
+      p.amp = 0.42 + (pulse > 0 ? 0.55 * pulse * pulse * pulse : 0);
+    } else if (k === 8) { // motes: inclined drift orbits, half retrograde
+      const r = auxB[i];
+      const a = auxA[i] + ((i & 1) ? 20 / r : -20 / r) * T;
+      const sa = Math.sin(a);
+      const x0 = r * Math.cos(a), y0 = -sa * r * 0.45, z0 = sa * r * 0.87;
+      const co = Math.cos(auxC[i]), so = Math.sin(auxC[i]);
+      p.tx = x0 * co + z0 * so;
+      p.ty = CY + y0;
+      p.tz = -x0 * so + z0 * co;
+      p.amp = 0.15 + 0.13 * (0.5 + 0.5 * Math.sin(T * 0.8 + auxA[i] * 5));
+    } else { // interior glow
+      p.amp = (0.16 + 0.12 * Math.sin(T * 1.1 + auxA[i]))
+        * (1 - 0.9 * eyeOcc(auxB[i], cosTop, cosBot));
+    }
+  }
+  window.__eyeMs = performance.now() - t0; // perf probe (read by drivers)
+}
+
+function updateGhost(T) { // animate the hem ripple; the hover bob rides the lerp
+  for (let i = 0; i < N; i++) {
+    if (auxK[i] !== 1) continue;
+    parts[i].ty = auxC[i] + auxB[i] * Math.sin(auxA[i] * 4 + 1.2 + T * 1.8);
+  }
+}
+
+// THE DARK EYE builder — emits the complete static form (gaze forward, lids
+// open, rings at t=0): prefers-reduced-motion shows exactly this pose, and
+// updateEye only retargets from here.
+function buildEye() {
+  const pts = new Array(N);
+  const cls = new Uint8Array(N);
+  const amp = new Float32Array(N).fill(1);
+  const { CY, R, RL, IR0 } = EYE;
+  const TAU = Math.PI * 2;
+  const cosTop0 = Math.cos(EYE.topOpen), cosBot0 = Math.cos(EYE.botOpen);
+  let i = 0;
+  for (const end = i + 3000; i < end; i++) { // sclera: even shell + woven latitudes
+    const ph = Math.random() * TAU;
+    const th = Math.random() < 0.3
+      ? ((1 + ((Math.random() * 8) | 0)) / 9) * Math.PI + (Math.random() - 0.5) * 0.04
+      : Math.acos(1 - 2 * Math.random());
+    const stt = Math.sin(th), ctt = Math.cos(th);
+    const rr = R * (0.99 + Math.random() * 0.02);
+    pts[i] = [rr * stt * Math.cos(ph), CY + rr * ctt, rr * stt * Math.sin(ph)];
+    cls[i] = Math.random() < 0.025 ? 1 : 0;
+    amp[i] = 0.55 * (1 - 0.85 * eyeOcc(ctt, cosTop0, cosBot0));
+    auxK[i] = 0;
+    auxA[i] = th * 5 + ph * 2; // spatial shimmer phase
+    auxB[i] = ctt;             // cos(polar) — lid-occlusion lookup
+    auxC[i] = Math.random() * TAU;
+  }
+  for (const end = i + 380; i < end; i++) { // faint interior glow
+    const th = Math.acos(1 - 2 * Math.random()), ph = Math.random() * TAU;
+    const rr = R * 0.88 * Math.cbrt(Math.random());
+    pts[i] = [rr * Math.sin(th) * Math.cos(ph), CY + rr * Math.cos(th), rr * Math.sin(th) * Math.sin(ph)];
+    cls[i] = 0;
+    amp[i] = 0.22;
+    auxK[i] = 1;
+    auxA[i] = Math.random() * TAU;
+    auxB[i] = (rr / R) * Math.cos(th);
+  }
+  for (const end = i + 520; i < end; i++) { // iris fibers: rays out of the slit
+    const psi = (((Math.random() * 30) | 0) / 30) * TAU + (Math.random() - 0.5) * 0.06;
+    const r0 = eyeSlitR(psi) + 1.3;
+    const rho = r0 + (17.6 - r0) * Math.pow(Math.random(), 0.85);
+    const lx = rho * Math.cos(psi), ly = rho * Math.sin(psi);
+    const lz = IR0 + eyeDome(rho) + (Math.random() - 0.5) * 0.8;
+    pts[i] = [lx, CY + ly, lz];
+    cls[i] = 0;
+    amp[i] = 0.5;
+    auxK[i] = 2; auxA[i] = lx; auxB[i] = ly; auxC[i] = lz;
+  }
+  for (const end = i + 180; i < end; i++) { // iris fill sparkle
+    const psi = Math.random() * TAU;
+    const r0 = eyeSlitR(psi) + 1.0;
+    const rho = r0 + (17.4 - r0) * Math.random();
+    const lx = rho * Math.cos(psi), ly = rho * Math.sin(psi);
+    const lz = IR0 + eyeDome(rho) + (Math.random() - 0.5) * 1.2;
+    pts[i] = [lx, CY + ly, lz];
+    cls[i] = 0;
+    amp[i] = 0.4;
+    auxK[i] = 2; auxA[i] = lx; auxB[i] = ly; auxC[i] = lz;
+  }
+  for (const end = i + 340; i < end; i++) { // limbal ring (outer, counter-spins)
+    const a = Math.random() * TAU;
+    const rho = 17.6 + (Math.random() - 0.5) * 1.4;
+    pts[i] = [rho * Math.cos(a), CY + rho * Math.sin(a), IR0 + eyeDome(rho)];
+    cls[i] = Math.random() < 0.3 ? 1 : 0;
+    amp[i] = 0.6;
+    auxK[i] = 3; auxA[i] = a; auxB[i] = rho; auxC[i] = Math.random() * TAU;
+  }
+  for (const end = i + 260; i < end; i++) { // inner iris ring
+    const a = Math.random() * TAU;
+    const rho = 11.2 + (Math.random() - 0.5) * 1.2;
+    pts[i] = [rho * Math.cos(a), CY + rho * Math.sin(a), IR0 + eyeDome(rho)];
+    cls[i] = Math.random() < 0.22 ? 1 : 0;
+    amp[i] = 0.5;
+    auxK[i] = 3; auxA[i] = a; auxB[i] = rho; auxC[i] = Math.random() * TAU;
+  }
+  for (const end = i + 170; i < end; i++) { // slit-pupil rim — the void's edge
+    const t = Math.random() * TAU;
+    const lx = 3.4 * Math.cos(t) * (1 + (Math.random() - 0.5) * 0.10);
+    const ly = 10.5 * Math.sin(t) * (1 + (Math.random() - 0.5) * 0.05);
+    const lz = IR0 + eyeDome(Math.hypot(lx, ly)) + 1.6;
+    pts[i] = [lx, CY + ly, lz];
+    cls[i] = 1;
+    amp[i] = 0.62;
+    auxK[i] = 4; auxA[i] = lx; auxB[i] = ly; auxC[i] = lz;
+  }
+  for (let lid = 0; lid < 2; lid++) { // eyelid shells: top hood + bottom rim
+    const n = lid === 0 ? 1050 : 760;
+    const ext = lid === 0 ? EYE.topOpen : EYE.botOpen;
+    for (const end = i + n; i < end; i++) {
+      const edge = Math.random() < 0.11;
+      const u = edge ? 0.958 + Math.random() * 0.042 : Math.pow(Math.random(), 0.62) * 0.95;
+      const ph = Math.random() * TAU;
+      const th = 0.07 + u * (ext - 0.07);
+      const stt = Math.sin(th), ctt = Math.cos(th);
+      pts[i] = [RL * stt * Math.cos(ph), CY + (lid === 0 ? RL * ctt : -RL * ctt), RL * stt * Math.sin(ph)];
+      cls[i] = edge ? 1 : 0;
+      amp[i] = edge ? 0.55 : 0.45;
+      auxK[i] = lid === 0 ? 5 : 6;
+      auxA[i] = ph; auxB[i] = u; auxC[i] = Math.random() * TAU;
+    }
+  }
+  for (let id = 0; id < 3; id++) { // precessing orbit rings
+    const o = EYE_ORBITS[id];
+    const n = id === 0 ? 460 : id === 1 ? 420 : 320;
+    const co = Math.cos(o.ph), so = Math.sin(o.ph);
+    for (const end = i + n; i < end; i++) {
+      const a = Math.random() * TAU;
+      const rr = o.r + (Math.random() - 0.5) * 2.4;
+      const x0 = rr * Math.cos(a), y0 = -rr * Math.sin(a) * o.sinT, z0 = rr * Math.sin(a) * o.cosT;
+      pts[i] = [x0 * co + z0 * so, CY + y0, -x0 * so + z0 * co];
+      cls[i] = Math.random() < 0.14 ? 1 : 0;
+      amp[i] = 0.5;
+      auxK[i] = 7; auxA[i] = a; auxB[i] = rr; auxC[i] = id;
+    }
+  }
+  for (; i < N; i++) { // drifting motes — depth dust around the watcher
+    const a = Math.random() * TAU;
+    const r = 42 + Math.pow(Math.random(), 0.7) * 34;
+    const Om = Math.random() * TAU;
+    const sa = Math.sin(a);
+    const x0 = r * Math.cos(a), y0 = -sa * r * 0.45, z0 = sa * r * 0.87;
+    const co = Math.cos(Om), so = Math.sin(Om);
+    pts[i] = [x0 * co + z0 * so, CY + y0, -x0 * so + z0 * co];
+    cls[i] = Math.random() < 0.03 ? 1 : 0;
+    amp[i] = 0.25;
+    auxK[i] = 8; auxA[i] = a; auxB[i] = r; auxC[i] = Om;
+  }
+  return { pos: pts, cls, amp, anim: { type: "eye" } };
+}
+
+// procedural ghost: lathed dome + skirt shell with a wavy hem, eye clusters
+function buildGhost() {
+  const pts = new Array(N);
+  const cls = new Uint8Array(N);
+  const amp = new Float32Array(N).fill(1);
+  const R = 30, TOP = 92, SK = 26; // dome radius, crown height, skirt bottom
+  const nShell = (N * 0.86) | 0, nFill = (N * 0.08) | 0;
+  let i = 0;
+  for (; i < nShell; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const pick = Math.random();
+    let y, r;
+    if (pick < 0.45) { // dome
+      const th = Math.random() * Math.PI * 0.5;
+      y = TOP - R + R * Math.cos(th);
+      r = R * Math.sin(th);
+    } else { // skirt, flaring slightly
+      const t = Math.random();
+      y = TOP - R - t * (TOP - R - SK);
+      r = R * (1 + 0.14 * t);
+    }
+    const hem = Math.max(0, 1 - (y - SK) / 14);
+    auxK[i] = hem > 0 ? 1 : 0; // hem particles ripple every frame
+    auxA[i] = a;
+    auxB[i] = 5 * hem;
+    auxC[i] = y;
+    y += hem > 0 ? 5 * Math.sin(a * 4 + 1.2) * hem : 0; // wavy hem
+    pts[i] = [r * Math.cos(a), y, r * Math.sin(a)];
+    cls[i] = Math.random() < 0.04 ? 1 : 0;
+  }
+  for (const end = i + nFill; i < end; i++) { // faint inner fill
+    const a = Math.random() * Math.PI * 2;
+    const y = SK + Math.random() * (TOP - SK - 6);
+    const r = Math.sqrt(Math.random()) * R * 0.8;
+    pts[i] = [r * Math.cos(a), y, r * Math.sin(a)];
+    cls[i] = 0;
+    amp[i] = 0.35;
+    auxK[i] = 0;
+  }
+  for (; i < N; i++) { // eyes: two bright clusters proud of the front shell
+    const ex = Math.random() < 0.5 ? -10 : 10;
+    pts[i] = [
+      ex + (Math.random() - 0.5) * 5,
+      TOP - R + 4 + (Math.random() - 0.5) * 6,
+      Math.sqrt(Math.max(0, R * R - ex * ex)) * 0.92 + 3 + (Math.random() - 0.5) * 2,
+    ];
+    cls[i] = 1;
+    auxK[i] = 0;
+  }
+  return { pos: pts, cls, amp, anim: { type: "ghost" } };
+}
+
+// dynamic sheet — targets are the grid; y is animated every frame
+function buildWave() {
+  const pts = new Array(N);
+  const cls = new Uint8Array(N);
+  const NX = 100, NZ = 90; // NX*NZ === N
+  for (let i = 0; i < N; i++) {
+    const gx = i % NX, gz = (i / NX) | 0;
+    pts[i] = [(gx / (NX - 1) - 0.5) * 360, 40, (gz / (NZ - 1) - 0.5) * 250];
+    cls[i] = Math.random() < 0.05 ? 1 : 0;
+  }
+  return { pos: pts, cls };
+}
+
+
+// -- murmur: deep's own avatar — a starling flock of glyphs -----------------
+// Many small pieces, none of them the thing, that only become a shape when
+// they move together. Parametric flock: each particle orbits a wandering
+// attractor at its own speed; a coherence pulse tightens the cloud into
+// banking ribbons and lets it breathe apart. The morph stagger's lerp does
+// the smoothing, so the flock swoops instead of teleporting.
+function buildMurmur() {
+  const pts = new Array(N);
+  const cls = new Uint8Array(N);
+  const dir = new Float32Array(N * 3);   // per-bird unit offset direction
+  const rad = new Float32Array(N);       // orbit radius
+  const spd = new Float32Array(N);       // angular speed (rad/s)
+  const ph  = new Float32Array(N);       // phase
+  for (let i = 0; i < N; i++) {
+    // random direction on the sphere
+    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+    const r2 = Math.sqrt(1 - u * u);
+    dir[i * 3] = r2 * Math.cos(th);
+    dir[i * 3 + 1] = u;
+    dir[i * 3 + 2] = r2 * Math.sin(th);
+    rad[i] = 26 + Math.pow(Math.random(), 0.7) * 78;
+    spd[i] = 0.22 + Math.random() * 0.55;
+    ph[i] = Math.random() * Math.PI * 2;
+    cls[i] = Math.random() < 0.04 ? 1 : 0;
+    // birth shape: loose ellipsoid around the roost point
+    pts[i] = [dir[i * 3] * rad[i], 96 + dir[i * 3 + 1] * rad[i] * 0.62, dir[i * 3 + 2] * rad[i]];
+  }
+  return { pos: pts, cls, anim: { type: "murmur", dir, rad, spd, ph } };
+}
+
+function updateMurmur(m, T) {
+  // wandering attractor — the flock's mood
+  const cx = 46 * Math.sin(T * 0.13) + 22 * Math.sin(T * 0.239);
+  const cy = 94 + 24 * Math.sin(T * 0.09 + 1.3) + 9 * Math.sin(T * 0.21);
+  const cz = 46 * Math.cos(T * 0.11) + 18 * Math.sin(T * 0.171 + 2.1);
+  // coherence pulse: 0 loose cloud … 1 tight banking ribbon (irregular rhythm)
+  const coh = 0.5 + 0.5 * Math.sin(T * 0.11 + 1.7 * Math.sin(T * 0.043));
+  // precessing rotation axis + flattening normal (the "sheet" murmurations bank into)
+  let ax = Math.sin(T * 0.07), ay = 0.8, az = Math.cos(T * 0.09);
+  let al = 1 / Math.hypot(ax, ay, az); ax *= al; ay *= al; az *= al;
+  let nx = Math.cos(T * 0.05 + 1), ny = 0.55, nz = Math.sin(T * 0.06);
+  let nl = 1 / Math.hypot(nx, ny, nz); nx *= nl; ny *= nl; nz *= nl;
+  const flat = 0.72 * (0.35 + 0.65 * coh);       // tighter = flatter = ribbon
+  const rmul = 0.55 + 0.62 * (1 - coh);          // tighter = smaller radius
+  const a = m;
+  for (let i = 0; i < N; i++) {
+    const dx = a.dir[i * 3], dy = a.dir[i * 3 + 1], dz = a.dir[i * 3 + 2];
+    const ang = a.ph[i] + T * a.spd[i];
+    const c = Math.cos(ang), s2 = Math.sin(ang);
+    // Rodrigues: rotate d around axis a by ang
+    const crx = ay * dz - az * dy, cry = az * dx - ax * dz, crz = ax * dy - ay * dx;
+    const dot = ax * dx + ay * dy + az * dz;
+    let ex = dx * c + crx * s2 + ax * dot * (1 - c);
+    let ey = dy * c + cry * s2 + ay * dot * (1 - c);
+    let ez = dz * c + crz * s2 + az * dot * (1 - c);
+    // flatten onto the banking sheet
+    const en = ex * nx + ey * ny + ez * nz;
+    ex -= en * nx * flat; ey -= en * ny * flat; ez -= en * nz * flat;
+    const R = a.rad[i] * rmul;
+    const p = parts[i];
+    p.tx = cx + ex * R;
+    p.ty = Math.max(14, cy + ey * R);
+    p.tz = cz + ez * R;
+  }
+}
+
+// hound + figure arrive from real meshes once the .glb files load
+const builders = { eye: buildEye, ghost: buildGhost, wave: buildWave, hound: null, figure: null , murmur: buildMurmur };
+const FORM_ORDER = ["eye", "figure", "hound", "ghost", "wave", "murmur"];
+let form = "eye";
+let pendingForm = null; // asked-for form whose model is still loading
+let liveAnim = null; // the current form's idle-life driver (built.anim)
+
+function applyForm(name) {
+  const built = builders[name]();
+  liveAnim = built.anim || null;
+  const now = performance.now();
+  for (let i = 0; i < N; i++) {
+    const p = parts[i];
+    p.tx = built.pos[i][0];
+    p.ty = built.pos[i][1];
+    p.tz = built.pos[i][2];
+    p.u = p.tx;
+    p.v = p.tz;
+    p.c = built.cls[i];
+    p.amp = built.amp ? built.amp[i] : 1;
+    p.delay = now + Math.random() * 700; // the morph stagger — the MVP feel
+  }
+  caption(`⟨ shift · ${name} ⟩`);
+}
+function setForm(name) {
+  if (!(name in builders)) return false;
+  form = name;
+  if (!builders[name]) {
+    pendingForm = name;
+    caption(`⟨ weaving ${name} — the mesh is still loading ⟩`);
+    return true;
+  }
+  pendingForm = null;
+  applyForm(name);
+  return true;
+}
+
+const loader = new GLTFLoader();
+let meshesReady = 0;
+function armModel(url, formName, opts) {
+  loader.load(
+    url,
+    (gltf) => {
+      const rig = makeRig(gltf, opts); // living rig when skinned + animated
+      builders[formName] = rig ? () => rig.built : () => cloudFromGltf(gltf, N, opts);
+      meshesReady++;
+      if (pendingForm === formName) {
+        pendingForm = null;
+        applyForm(formName);
+        stateLine();
+      }
+      if (meshesReady === 2) window.__ready = true; // driver hook (Playwright)
+    },
+    undefined,
+    () => caption(`⟨ ${formName} mesh failed to load ⟩`, true)
+  );
+}
+// Fox.glb: real fox mesh (CC-BY 4.0 — PixelMannen / @tomkranis / @AsoboStudio).
+// The fox points down +X after sampling; height ≈ shoulder-to-ear of the mesh.
+// idle clip "Survey" — the fox sniffs and looks around at natural speed
+armModel("/assets/Fox.glb", "hound", { height: 88, rotY: 0, damp: 0.9, clip: "Survey", timeScale: 1 });
+// Mage.glb: robed humanoid (CC0 — KayKit Adventurers, Kay Lousberg). Ships a
+// real "Idle" clip — weight settled, breath, small head drift; 0.55x makes
+// the 1.07s loop a calm ~2s breath. Hat + cape ride their bones (attach);
+// the pack's loose props (wand, staff, spellbooks) are left out.
+// clip "Spellcasting" (looping channel) replaced "Idle" 2026-08-23 — his call:
+// the breathing idle was invisible (probe: meanDrift 0.054 vs hound 2.5)
+armModel("/assets/Mage.glb", "figure", { height: 106, rotY: 0, damp: 0.85, clip: "Spellcasting", timeScale: 0.8, attach: /^Mage_(Hat|Cape)$/, attachDamp: 0.6 });
+
+// ---------- tableboard — emissive glyph cells on a floating plane ---------------
+const BW = 46, BH = 24, BC = BW * BH;
+const CW = 4.4, CH = 4.6; // cell metrics — bigger than the MVP, bloom carries it
+const BOARD_MODES = ["waves", "lissajous", "bars"];
+const board = {
+  mode: null, alpha: 0, target: 0, dissolving: false,
+  buf: new Float32Array(BC),
+  gold: new Float32Array(BC),
+  rev: new Float32Array(BC),
+  chs: new Array(BC),
+  pos: new Array(BC),
+};
+const boardGroup = new THREE.Group();
+const B_CENTER = new THREE.Vector3(-178, 96, -36);
+const B_YAW = 0.55;
+boardGroup.position.copy(B_CENTER);
+boardGroup.rotation.y = B_YAW;
+scene.add(boardGroup);
+{
+  for (let r = 0; r < BH; r++)
+    for (let c = 0; c < BW; c++) {
+      const i = r * BW + c;
+      board.pos[i] = [(c - (BW - 1) / 2) * CW, ((BH - 1) / 2 - r) * CH, 0];
+      board.rev[i] = Math.random() * 0.85;
+      board.chs[i] = ri();
+    }
+}
+// dark backing panel — gives the board a surface so it reads as a THING,
+// normal blending (it darkens), drawn before every glyph
+const panelMat = new THREE.MeshBasicMaterial({
+  color: 0x03140a,
+  transparent: true,
+  opacity: 0,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+});
+const panel = new THREE.Mesh(new THREE.PlaneGeometry(BW * CW + 16, BH * CH + 16), panelMat);
+panel.position.z = -1.5;
+panel.renderOrder = 1;
+boardGroup.add(panel);
+// two glyph layers per cell: the trace and its gold overlay
+const boardSys = makeGlyphs(BC * 2, atlas, boardGroup);
+allSystems.push(boardSys);
+{
+  for (let i = 0; i < BC; i++) {
+    const [px, py] = board.pos[i];
+    boardSys.pos.set([px, py, 0], i * 3);
+    boardSys.pos.set([px, py, 1.2], (BC + i) * 3);
+    boardSys.size[i] = 8.5;
+    boardSys.size[BC + i] = 8.5;
+    boardSys.setTint(BC + i, 2); // the overlay is always gold
+  }
+  boardSys.dirty();
+}
+function setBoard(mode) {
+  if (mode && !BOARD_MODES.includes(mode)) return false;
+  if (mode) {
+    board.mode = mode;
+    board.target = 1;
+    board.dissolving = false;
+    caption(`⟨ board · ${mode} ⟩`);
+  } else if (board.mode) {
+    board.target = 0;
+    board.dissolving = true;
+    caption("⟨ board released ⟩", true);
+  }
+  return true;
+}
+function stamp(buf, c, y, e) {
+  for (let dr = -1; dr <= 1; dr++) {
+    const r = Math.round(y) + dr;
+    if (r < 1 || r >= BH - 1 || c < 1 || c >= BW - 1) continue;
+    const d = Math.abs(y - r);
+    buf[r * BW + c] = Math.min(1, buf[r * BW + c] + e * Math.exp((-d * d) / 0.45));
+  }
+}
+function boardUpdate(T) {
+  const { buf, gold } = board;
+  for (let i = 0; i < BC; i++) {
+    buf[i] *= 0.8;
+    gold[i] *= 0.8;
+  }
+  const mid = BH / 2;
+  if (board.mode === "waves") {
+    for (let c = 1; c < BW - 1; c++) {
+      const y1 = mid + 6.5 * Math.sin(c * 0.26 - T * 2.4);
+      const y2 = mid + 4.0 * Math.sin(c * 0.15 + T * 1.5 + 1.3);
+      stamp(buf, c, y1, 0.9);
+      stamp(buf, c, y2, 0.55);
+      stamp(gold, c, mid + ((y1 - mid) + (y2 - mid)) * 0.55, 0.7);
+    }
+  } else if (board.mode === "lissajous") {
+    for (let i = 0; i < BC; i++) buf[i] *= 0.985; // slower phosphor decay
+    const del = T * 0.11;
+    for (let k = 0; k < 7; k++) {
+      const t = T * 1.7 + k * 0.02;
+      const x = (Math.sin(3 * t) * 0.5 + 0.5) * (BW - 4) + 2;
+      const y = (Math.sin(2 * t + del) * 0.5 + 0.5) * (BH - 4) + 2;
+      stamp(buf, Math.round(x), y, 0.85);
+    }
+  } else if (board.mode === "bars") {
+    const nb = 11;
+    for (let k = 0; k < nb; k++) {
+      const h = (0.25 + 0.72 * Math.abs(Math.sin(T * (0.9 + k * 0.13) + k * 1.7))) * (BH - 5);
+      const c0 = 2 + k * 4;
+      for (let dc = 0; dc < 3; dc++) {
+        const c = c0 + dc;
+        if (c >= BW - 1) continue;
+        for (let r = 0; r < h; r++) {
+          const row = BH - 2 - r;
+          if (row < 1) break;
+          buf[row * BW + c] = Math.min(1, buf[row * BW + c] + 0.45);
+        }
+        const cap = BH - 2 - Math.round(h);
+        if (cap >= 1) gold[cap * BW + c] = 1;
+      }
+    }
+  }
+}
+// board rows are indexed top-down; glyph y was built top-down too, so the
+// row math from the demo carries straight over (row 0 = top of the plane)
+
+// ---------- the TV — the board's screen face: real images, any content ----------
+// spec: "the board is a TV — real graphs/images; glyph modes are one channel"
+const tvMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, side: THREE.DoubleSide, toneMapped: false });
+const tvPlane = new THREE.Mesh(new THREE.PlaneGeometry(BW * CW + 16, BH * CH + 16), tvMat);
+tvPlane.position.z = 0.6; // just in front of the backing panel
+tvPlane.renderOrder = 2;
+tvPlane.visible = false;
+boardGroup.add(tvPlane);
+const tv = { on: false, alpha: 0, target: 0, video: null };
+// AMD hw-decode workaround (2026-08-23, the frozen-board night): texImage2D
+// straight from a hardware-decoded <video> can return the SAME stale frame
+// forever on AMD/Windows while currentTime happily advances — every metric
+// healthy, the screen frozen. drawImage into a 2D canvas uses a different
+// readback path that actually delivers frames, so the board texture is a
+// CanvasTexture fed by drawImage every rAF, never a VideoTexture.
+const tvCanvas = document.createElement("canvas");
+const tvCtx = tvCanvas.getContext("2d");
+function tvStopVideo() {
+  if (tv.video) {
+    try { tv.video.pause(); tv.video.src = ""; tv.video.remove(); } catch { /* already dead */ }
+    tv.video = null;
+  }
+}
+function tvShow(tex, title) {
+  tex.colorSpace = THREE.SRGBColorSpace;
+  if (tvMat.map) tvMat.map.dispose();
+  tvMat.map = tex;
+  tvMat.needsUpdate = true;
+  tv.on = true;
+  tv.target = 1;
+  tvPlane.visible = true;
+  if (board.mode && board.target > 0) setBoard(null); // glyphs yield the panel
+  caption(`⟨ board · ${title || "tv"} ⟩`);
+  stateLine();
+}
+// Chrome refuses muted autoplay in tabs it considers invisible (background
+// load, window occlusion on Windows) and play() is never retried — the board
+// sits paused on frame 0 forever (seen live 2026-08-23, pepit6 heartbeat:
+// hidden:true, paused, t=0). Kick it: retry on any click, on visibility
+// change, and every 3s. A click carries user activation, which always wins.
+function tvKick() {
+  if (tv.video && tv.video.paused) tv.video.play().catch(() => { /* still hidden — next kick */ });
+}
+document.addEventListener("visibilitychange", tvKick);
+window.addEventListener("pointerdown", tvKick, true);
+setInterval(tvKick, 3000);
+// starvation fallback: Edge marks occluded windows hidden and throttles rAF
+// toward zero (seen live 2026-08-23: his own page beating hidden:true at
+// ~8fps while he flies in it). If rAF stops drawing, this keeps the board a
+// slow slideshow instead of a corpse — timers survive hidden, rAF doesn't.
+window.__tvLastDraw = 0;
+setInterval(() => {
+  if (tv.video && tv.video.readyState >= 2 && tvMat.map && performance.now() - window.__tvLastDraw > 280) {
+    try { tvCtx.drawImage(tv.video, 0, 0, tvCanvas.width, tvCanvas.height); tvMat.map.needsUpdate = true; } catch { /* mid-seek */ }
+  }
+}, 300);
+function setTV(image, title, media) {
+  if (media) {
+    // real video on the board — VideoTexture over an autoplaying muted loop.
+    // Dimmed hard (his call 2026-08-23: "too bright — same problem as the
+    // avatars"): big saturated areas set the bloom pass on fire otherwise.
+    tvStopVideo();
+    const vid = document.createElement("video");
+    vid.muted = true;
+    vid.loop = true;
+    vid.playsInline = true;
+    vid.autoplay = true;
+    vid.src = media;
+    // Chrome stops presenting frames to fully-detached videos after a few
+    // seconds (invisible-video optimization) — the texture freezes on one
+    // frame (seen live 2026-08-23, act one of the chaos show). Keep the
+    // element in the DOM, imperceptible but technically visible.
+    vid.style.cssText = "position:fixed;left:0;bottom:0;width:2px;height:2px;opacity:0.02;pointer-events:none;";
+    document.body.appendChild(vid);
+    vid.play().catch(() => { /* autoplay policy: muted should pass */ });
+    tv.video = vid;
+    tvMat.color.setScalar(0.55);
+    tvCanvas.width = 640; tvCanvas.height = 360; // real size set on first frame
+    tvCtx.fillStyle = "#000"; tvCtx.fillRect(0, 0, tvCanvas.width, tvCanvas.height);
+    const tex = new THREE.CanvasTexture(tvCanvas);
+    // no mipmaps: CanvasTexture defaults to LinearMipmapLinear and the board
+    // goes soft — VideoTexture never mipmapped, keep that sharpness (his call:
+    // "too much blur", 2026-08-23)
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    tvShow(tex, title);
+  } else if (image) {
+    tvStopVideo();
+    tvMat.color.setScalar(0.92); // charts are mostly dark — barely dimmed
+    new THREE.TextureLoader().load(image, (tex) => tvShow(tex, title));
+  } else if (tv.on) {
+    tv.target = 0;
+  }
+}
+
+// ---------- conjured forms — wireframe + glyphs riding the edges ---------------
+function cubeShape() {
+  const s = 32, v = [];
+  for (const a of [-s, s]) for (const b of [-s, s]) for (const c of [-s, s]) v.push([a, b, c]);
+  const e = [[0,1],[0,2],[0,4],[1,3],[1,5],[2,3],[2,6],[3,7],[4,5],[4,6],[5,7],[6,7]];
+  return { v, e };
+}
+function torusShape() {
+  const v = [], e = [], NI = 16, NJ = 10, R = 34, r = 13;
+  for (let i = 0; i < NI; i++)
+    for (let j = 0; j < NJ; j++) {
+      const th = (i / NI) * Math.PI * 2, ph = (j / NJ) * Math.PI * 2;
+      v.push([(R + r * Math.cos(ph)) * Math.cos(th), r * Math.sin(ph), (R + r * Math.cos(ph)) * Math.sin(th)]);
+      e.push([i * NJ + j, i * NJ + ((j + 1) % NJ)]);
+      e.push([i * NJ + j, ((i + 1) % NI) * NJ + j]);
+    }
+  return { v, e };
+}
+const SHAPES = { cube: cubeShape(), torus: torusShape() };
+const CONJ_ORDER = [null, "cube", "torus"];
+const MAX_CG = 1400; // vertices + edge riders
+const MAX_E = 340;
+const conjGroup = new THREE.Group();
+conjGroup.position.set(168, 64, -26);
+scene.add(conjGroup);
+const conjLineGeo = new THREE.BufferGeometry();
+conjLineGeo.setAttribute(
+  "position",
+  new THREE.BufferAttribute(new Float32Array(MAX_E * 2 * 3), 3).setUsage(THREE.DynamicDrawUsage)
+);
+conjLineGeo.setDrawRange(0, 0);
+const conjLineMat = new THREE.LineBasicMaterial({
+  color: new THREE.Color(...PAL[0]),
+  transparent: true,
+  opacity: 0,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  fog: true,
+});
+const conjLines = new THREE.LineSegments(conjLineGeo, conjLineMat);
+conjLines.frustumCulled = false;
+conjGroup.add(conjLines);
+const conjSys = makeGlyphs(MAX_CG, atlas, conjGroup);
+allSystems.push(conjSys);
+const conj = { shape: null, alpha: 0, target: 0, dissolving: false, ng: 0 };
+function setConjure(name) {
+  if (name && !SHAPES[name]) return false;
+  if (name) {
+    const sh = SHAPES[name];
+    conj.shape = name;
+    conj.target = 1;
+    conj.dissolving = false;
+    let g = 0;
+    for (let i = 0; i < sh.v.length && g < MAX_CG; i++, g++) { // corner glyphs
+      conjSys.pos.set(sh.v[i], g * 3);
+      conjSys.glyph[g] = ri();
+      conjSys.size[g] = 8;
+    }
+    for (const [a, b] of sh.e) { // glyphs riding each edge
+      const va = sh.v[a], vb = sh.v[b];
+      const len = Math.hypot(vb[0] - va[0], vb[1] - va[1], vb[2] - va[2]);
+      const nrid = Math.max(1, Math.min(4, Math.round(len / 14)));
+      for (let k = 1; k <= nrid && g < MAX_CG; k++, g++) {
+        const t = k / (nrid + 1);
+        conjSys.pos.set(
+          [va[0] + (vb[0] - va[0]) * t, va[1] + (vb[1] - va[1]) * t, va[2] + (vb[2] - va[2]) * t],
+          g * 3
+        );
+        conjSys.glyph[g] = ri();
+        conjSys.size[g] = 5.5;
+      }
+    }
+    conj.ng = g;
+    const lp = conjLineGeo.attributes.position.array;
+    for (let i = 0; i < sh.e.length; i++) {
+      lp.set(sh.v[sh.e[i][0]], i * 6);
+      lp.set(sh.v[sh.e[i][1]], i * 6 + 3);
+    }
+    conjLineGeo.setDrawRange(0, sh.e.length * 2);
+    conjLineGeo.attributes.position.needsUpdate = true;
+    conjSys.dirty();
+    caption(`⟨ conjure · ${name} ⟩`);
+  } else if (conj.shape) {
+    conj.target = 0;
+    conj.dissolving = true;
+    caption("⟨ form released ⟩", true);
+  }
+  return true;
+}
+
+function dismissAll() {
+  let any = false;
+  if (board.mode && board.target > 0) { setBoard(null); any = true; }
+  if (tv.on && tv.target > 0) { setTV(null); any = true; }
+  if (conj.shape && conj.target > 0) { setConjure(null); any = true; }
+  if (summons.size) { for (const nm of [...summons.keys()]) summonDissolve(nm); any = true; }
+  caption(any ? "⟨ dissolved — gold ⟩" : "⟨ the field is already quiet ⟩", any);
+}
+
+// ---------- multi-summons — any number of named agent-built forms ---------------
+// (his ask 2026-08-23: "several things at the same time — build around all")
+// Each summon is independent: its own wireframe + glyph riders, same
+// aesthetics as conjure, gold dissolve on release.
+const summons = new Map();
+function summonAdd(name, v, e) {
+  summonDrop(name); // instant replace of a same-named form
+  const group = new THREE.Group();
+  scene.add(group);
+  const lp = new Float32Array(e.length * 6);
+  for (let i = 0; i < e.length; i++) { lp.set(v[e[i][0]], i * 6); lp.set(v[e[i][1]], i * 6 + 3); }
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute("position", new THREE.BufferAttribute(lp, 3));
+  const lineMat = new THREE.LineBasicMaterial({
+    color: new THREE.Color(...PAL[0]),
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    fog: true,
+  });
+  const lines = new THREE.LineSegments(lineGeo, lineMat);
+  lines.frustumCulled = false;
+  group.add(lines);
+  const cap = Math.min(700, v.length + e.length * 4);
+  const sys = makeGlyphs(cap, atlas, group);
+  allSystems.push(sys);
+  let g = 0;
+  for (let i = 0; i < v.length && g < cap; i++, g++) { sys.pos.set(v[i], g * 3); sys.glyph[g] = ri(); sys.size[g] = 8; }
+  for (const [a, b] of e) {
+    const va = v[a], vb = v[b];
+    const len = Math.hypot(vb[0] - va[0], vb[1] - va[1], vb[2] - va[2]);
+    const nr = Math.max(1, Math.min(4, Math.round(len / 14)));
+    for (let k = 1; k <= nr && g < cap; k++, g++) {
+      const t = k / (nr + 1);
+      sys.pos.set(
+        [va[0] + (vb[0] - va[0]) * t, va[1] + (vb[1] - va[1]) * t, va[2] + (vb[2] - va[2]) * t],
+        g * 3
+      );
+      sys.glyph[g] = ri();
+      sys.size[g] = 5.5;
+    }
+  }
+  for (let i = g; i < cap; i++) sys.alpha[i] = 0;
+  let scx = 0, scy = 0, scz = 0;
+  for (const p of v) { scx += p[0]; scy += p[1]; scz += p[2]; }
+  const centroid = new THREE.Vector3(scx / v.length, scy / v.length, scz / v.length);
+  summons.set(name, { group, sys, lineGeo, lineMat, ng: g, centroid, st: { target: 1, alpha: 0, dissolving: false } });
+  caption(`⟨ summon · ${name} ⟩`);
+  stateLine();
+}
+function summonDissolve(name) {
+  const s = summons.get(name);
+  if (!s || s.st.dissolving) return;
+  s.st.target = 0;
+  s.st.dissolving = true;
+  for (let i = 0; i < s.ng; i++) s.sys.setTint(i, 2); // gold
+  caption(`⟨ ${name} released — gold ⟩`, true);
+}
+function summonDrop(name) {
+  const s = summons.get(name);
+  if (!s) return;
+  scene.remove(s.group);
+  const ai = allSystems.indexOf(s.sys);
+  if (ai >= 0) allSystems.splice(ai, 1);
+  s.lineGeo.dispose();
+  s.lineMat.dispose();
+  summons.delete(name);
+  stateLine();
+}
+
+// ---------- HUD state line ------------------------------------------------------
+const stateEl = document.getElementById("state");
+let linkUp = false;
+function stateLine() {
+  stateEl.innerHTML =
+    `link <b class="${linkUp ? "" : "lost"}">${linkUp ? "live" : "lost"}</b>` +
+    ` · form <b>${form}${pendingForm ? "…" : ""}</b>` +
+    ` · board <b>${board.target > 0 ? board.mode : tv.target > 0 ? "tv" : "—"}</b>` +
+    ` · conjured <b>${conj.target > 0 ? conj.shape : "—"}</b>` +
+    ` · summons <b>${summons.size || "—"}</b>`;
+}
+
+// ---------- ops: local console → the server → SSE → every open page -------------
+// the page never mutates truth on its own — even its own console posts the op
+// and waits for it to come back on the stream
+async function sendOp(op) {
+  try {
+    const r = await fetch("/op", {
+      method: "POST",
+      headers: { "x-field-key": KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(op),
+    });
+    const j = await r.json();
+    if (j.error) caption(`⟨ ${j.error} ⟩`, true);
+  } catch {
+    caption("⟨ the field server is not answering ⟩", true);
+  }
+}
+function applyOp(m) {
+  if (m.op === "state") {
+    if (m.state.form && m.state.form !== form) setForm(m.state.form);
+    if (m.state.board) { if (m.state.board !== board.mode || board.target === 0) setBoard(m.state.board); }
+    else if (board.mode && board.target > 0) setBoard(null);
+    if (m.state.conjured && SHAPES[m.state.conjured]) {
+      if (m.state.conjured !== conj.shape || conj.target === 0) setConjure(m.state.conjured);
+    } else if (conj.shape && conj.target > 0) setConjure(null);
+    const want = m.state.summons || {};
+    for (const nm of Object.keys(want)) if (!summons.has(nm)) summonAdd(nm, want[nm].v, want[nm].e);
+    for (const nm of [...summons.keys()]) if (!want[nm]) summonDissolve(nm);
+    if (m.state.tv) setTV(m.state.tv.image, m.state.tv.title, m.state.tv.media);
+    else if (tv.on && tv.target > 0) setTV(null);
+  } else if (m.op === "shift") setForm(m.form);
+  else if (m.op === "board") setBoard(m.mode === "off" ? null : m.mode);
+  else if (m.op === "conjure") setConjure(m.shape === "off" ? null : m.shape);
+  else if (m.op === "summon") summonAdd(m.name, m.v, m.e);
+  else if (m.op === "unsummon") summonDissolve(m.name);
+  else if (m.op === "tv") setTV(m.image, m.title, m.media);
+  else if (m.op === "look") lookAtSpot(m.at, m.dist);
+  else if (m.op === "say") fieldSay(m.text, m.quiet);
+  // m.op === "voice" is for listening agents, not pages — the speaking page
+  // already captioned itself
+  else if (m.op === "dismiss") dismissAll();
+  stateLine();
+}
+
+// ---------- field voice — the field speaks and listens on its own ---------------
+// Self-contained: browser TTS out, browser speech recognition in. No Eye, no
+// Electron — the Field is its own application (spec B §4).
+let fieldVoice = null;
+function pickVoice() {
+  const vs = speechSynthesis.getVoices();
+  fieldVoice =
+    vs.find((v) => /^en/i.test(v.lang) && /male|david|daniel|guy|george/i.test(v.name)) ||
+    vs.find((v) => /^en/i.test(v.lang)) || vs[0] || null;
+}
+try { speechSynthesis.onvoiceschanged = pickVoice; pickVoice(); } catch { /* no TTS */ }
+// the "wait, always" law reaches the field (his catch 2026-08-23: "you are
+// interrupting me"): while his mic is live, agent words QUEUE and play only
+// after he finishes. His voice is never spoken over.
+const sayQueue = [];
+// the field's own Kokoro (his call: "same voice as the Eye, in the field") —
+// wavs from /tts, played in strict order; browser TTS only as fallback
+const audioQ = [];
+let audioBusy = false;
+function playNextWav() {
+  if (audioBusy || !audioQ.length) return;
+  audioBusy = true;
+  const url = audioQ.shift();
+  const a = new Audio(url);
+  a.onended = a.onerror = () => { audioBusy = false; URL.revokeObjectURL(url); playNextWav(); };
+  a.play().catch(() => { audioBusy = false; URL.revokeObjectURL(url); playNextWav(); });
+}
+function speakFallback(text) {
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    if (fieldVoice) u.voice = fieldVoice;
+    u.rate = 1.02;
+    u.pitch = 0.8;
+    speechSynthesis.speak(u);
+  } catch { /* caption stands alone */ }
+}
+function speakNow(text) {
+  caption(`⟨ ${text} ⟩`);
+  fetch(`/tts?key=${encodeURIComponent(KEY)}&text=${encodeURIComponent(text)}`)
+    .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.blob(); })
+    .then((b) => { audioQ.push(URL.createObjectURL(b)); playNextWav(); })
+    .catch(() => speakFallback(text));
+}
+function fieldSay(text, quiet) {
+  if (quiet) { caption(`⟨ ${text} ⟩`); return; } // caption only — Kokoro speaks elsewhere
+  if (typeof micLive !== "undefined" && micLive) {
+    sayQueue.push(text);
+    caption("⟨ …holding my words — you are speaking ⟩");
+    return;
+  }
+  try { speechSynthesis.cancel(); } catch { /* no TTS */ }
+  speakNow(text);
+}
+// push-to-talk (his catch 2026-08-23: "the mic is cutting half talking") —
+// Chrome's endpointing finalizes on ~1s of silence, so a natural breath was
+// ending the capture. Now: click opens the mic and it STAYS open through
+// pauses (continuous), click again sends the whole thing as one message.
+const bMic = document.getElementById("bMic");
+let rec = null, micLive = false, micHeard = "";
+function micFlush() {
+  const text = micHeard.trim();
+  micHeard = "";
+  if (text) {
+    caption(`⟨ you: ${text} ⟩`);
+    sendOp({ op: "voice", text });
+  }
+}
+function micStop() {
+  micLive = false;
+  bMic.style.color = ""; bMic.style.borderColor = "";
+  micFlush();
+  while (sayQueue.length) speakNow(sayQueue.shift()); // held words, in order
+}
+bMic.onclick = () => {
+  if (micLive) {
+    try { rec.stop(); } catch { micStop(); } // stop → final results → onend → micStop
+    return;
+  }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { caption("⟨ this browser has no speech recognition ⟩", true); return; }
+  rec = new SR();
+  rec.lang = "en-US";
+  rec.continuous = true;
+  rec.interimResults = true; // live caption while he talks
+  rec.maxAlternatives = 1;
+  micHeard = "";
+  rec.onresult = (ev) => {
+    let interim = "";
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const r = ev.results[i];
+      if (r.isFinal) micHeard += r[0].transcript + " ";
+      else interim += r[0].transcript;
+    }
+    const live = (micHeard + interim).trim();
+    // long monologue: keep the newest words on screen (tail), cap ~3 lines
+    const shown = live.length > 300 ? "…" + live.slice(-300) : live;
+    if (live) caption(`⟨ you: ${shown} ▊ ⟩`);
+  };
+  rec.onend = micStop;
+  rec.onerror = () => { /* onend always follows */ };
+  micLive = true;
+  bMic.style.color = "#ffd24d"; bMic.style.borderColor = "#ffd24d";
+  caption("⟨ listening — click voice again to send ⟩");
+  rec.start();
+};
+const es = new EventSource(`/events?key=${encodeURIComponent(KEY)}`);
+es.onopen = () => { linkUp = true; stateLine(); };
+es.onerror = () => { linkUp = false; stateLine(); }; // EventSource retries itself
+es.onmessage = (e) => {
+  try { applyOp(JSON.parse(e.data)); } catch { /* not for us */ }
+};
+
+// heartbeat: every page tells the server what it is actually doing (render
+// frames advancing? tv playing?) so agents can see what the user sees —
+// added 2026-08-23 after a board freeze was invisible from the agent side
+const PAGE_ID = Math.random().toString(36).slice(2, 8);
+setInterval(() => {
+  const v = tv.video;
+  fetch(`/beat?key=${encodeURIComponent(KEY)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      id: PAGE_ID,
+      ua: navigator.userAgent.slice(0, 80),
+      frames: window.__beatFrames || 0,
+      hidden: document.hidden,
+      tv: v ? { t: +v.currentTime.toFixed(2), paused: v.paused, ready: v.readyState, err: v.error ? v.error.code : 0,
+                draw: window.__tvLastDraw ? Math.round(performance.now() - window.__tvLastDraw) : -1 } : null,
+    }),
+  }).catch(() => { /* server away — EventSource will tell us */ });
+}, 4000);
+
+// ---------- local command console (testing drive; the bridge is primary) --------
+function cmd(s) {
+  s = s.trim().toLowerCase();
+  if (!s) return;
+  const w = s.split(/\s+/);
+  const alias = { liss: "lissajous", spectrum: "bars", table: "board", tableboard: "board", orb: "torus" };
+  const norm = w.map((x) => alias[x] || x);
+  if (norm.includes("dismiss") || norm.includes("clear")) sendOp({ op: "dismiss" });
+  else if (norm[0] === "board" || norm[0] === "summon")
+    sendOp({ op: "board", mode: norm.find((x) => BOARD_MODES.includes(x) || x === "off") || board.mode || "waves" });
+  else if (BOARD_MODES.includes(norm[0])) sendOp({ op: "board", mode: norm[0] });
+  else if (norm[0] === "shift") {
+    if (FORM_ORDER.includes(norm[1])) sendOp({ op: "shift", form: norm[1] });
+    else caption("⟨ forms: eye · figure · hound · ghost · wave ⟩");
+  } else if (FORM_ORDER.includes(norm[0])) sendOp({ op: "shift", form: norm[0] });
+  else if (norm[0] === "conjure") sendOp({ op: "conjure", shape: norm[1] || "cube" });
+  else if (SHAPES[norm[0]]) sendOp({ op: "conjure", shape: norm[0] });
+  else caption("⟨ try: board waves · shift hound · conjure torus · dismiss ⟩");
+}
+document.getElementById("bBoard").onclick = () => {
+  const modes = [...BOARD_MODES, "off"];
+  const next = board.target > 0 ? modes[(modes.indexOf(board.mode) + 1) % modes.length] : "waves";
+  sendOp({ op: "board", mode: next });
+};
+document.getElementById("bShift").onclick = () =>
+  sendOp({ op: "shift", form: FORM_ORDER[(FORM_ORDER.indexOf(form) + 1) % FORM_ORDER.length] });
+document.getElementById("bConj").onclick = () => {
+  const cur = conj.target > 0 ? CONJ_ORDER.indexOf(conj.shape) : 0;
+  const next = CONJ_ORDER[(cur + 1) % CONJ_ORDER.length];
+  sendOp({ op: "conjure", shape: next ?? "off" });
+};
+document.getElementById("bDis").onclick = () => sendOp({ op: "dismiss" });
+const input = document.getElementById("cmd");
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { cmd(input.value); input.value = ""; }
+});
+
+// ---------- init -----------------------------------------------------------------
+resize();
+setForm("eye"); // the honest empty field: grid, rain, the idle eye
+caption("⟨ the field is quiet — nothing appears unless you ask ⟩");
+stateLine();
+
+// ---------- main loop -------------------------------------------------------------
+let last = performance.now();
+let boardCleared = true;
+function frame(now) {
+  if (__paused) {
+    last = now;
+    requestAnimationFrame(frame);
+    return;
+  }
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  const T = now / 1000;
+
+  // his call 2026-08-23: the camera is HIS — it never rotates by itself.
+  // The only motion not from his hand is an agent's look glide, which his
+  // pointer-down cancels.
+  controls.autoRotate = false;
+  {
+    // ghost-fly (his correction 2026-08-23): W goes exactly where he is
+    // LOOKING — full 3D along the view vector, S the reverse, A/D strafe.
+    // No Q/E. His words: "like a ghost … always moving with the camera angle."
+    const mv = (keys.w ? 1 : 0) - (keys.s ? 1 : 0);
+    const st = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
+    if (mv || st) {
+      const sp = (keys.shift ? 680 : 250) * dt;
+      const fwd = new THREE.Vector3().subVectors(controls.target, camera.position).normalize();
+      const right = new THREE.Vector3().crossVectors(fwd, camera.up).normalize();
+      const d = new THREE.Vector3()
+        .addScaledVector(fwd, mv * sp)
+        .addScaledVector(right, st * sp);
+      camera.position.add(d);
+      controls.target.add(d);
+      if (camera.position.y < 4) { controls.target.y += 4 - camera.position.y; camera.position.y = 4; }
+    }
+  }
+  if (look.active) {
+    const lk = 1 - Math.pow(0.92, dt * 60);
+    camera.position.lerp(look.pos, lk);
+    controls.target.lerp(look.tgt, lk);
+    if (camera.position.distanceTo(look.pos) < 1.5 && controls.target.distanceTo(look.tgt) < 1.5)
+      look.active = false;
+  }
+  controls.update();
+  grid.uniforms.uBreath.value = 0.86 + 0.14 * Math.sin(T * 0.5); // everything breathes
+
+  // rain — heads flip fast, tails smolder
+  {
+    let k = 0;
+    for (const d of rain) {
+      d.y -= d.v * dt;
+      if (d.y < -12) {
+        d.y = 300 + Math.random() * 110;
+        d.n = 7 + ((Math.random() * 7) | 0);
+      }
+      for (let i = 0; i < RAIN_LEN; i++) {
+        const y = d.y + i * 13;
+        const on = i < d.n && y <= 360;
+        rainSys.alpha[k] = on ? (i === 0 ? 0.9 : 0.42 * (1 - i / d.n)) : 0;
+        if (on) {
+          rainSys.pos[k * 3] = d.x;
+          rainSys.pos[k * 3 + 1] = y;
+          rainSys.pos[k * 3 + 2] = d.z;
+          rainSys.size[k] = i === 0 ? 11 : 9;
+          if (Math.random() < (i === 0 ? 0.22 : 0.015)) rainSys.glyph[k] = ri();
+          rainSys.setTint(k, i === 0 ? 1 : 0);
+        }
+        k++;
+      }
+    }
+    rainSys.dirty();
+  }
+
+  // shapeshifter — staggered morph toward the current body
+  {
+    // idle life moves the TARGETS; the staggered lerp still does the chasing,
+    // so animation composes with the morph feel instead of replacing it
+    if (liveAnim && !reduced) {
+      if (liveAnim.type === "rig") updateRig(liveAnim.rig, dt);
+      else if (liveAnim.type === "eye") updateEye(liveAnim, T);
+      else if (liveAnim.type === "ghost") updateGhost(T);
+      else if (liveAnim.type === "murmur") updateMurmur(liveAnim, T);
+    }
+    const bob = form === "ghost" ? 5 * Math.sin(T * 1.6) : 0;
+    const isWave = form === "wave" && !pendingForm;
+    for (let i = 0; i < N; i++) {
+      const p = parts[i];
+      if (isWave)
+        p.ty = 34 + 16 * Math.sin(p.u * 0.045 + T * 1.9) + 8 * Math.sin(p.v * 0.075 - T * 1.3);
+      if (now > p.delay) {
+        const k = 1 - Math.pow(0.925, dt * 60);
+        p.x += (p.tx - p.x) * k;
+        p.y += (p.ty + bob - p.y) * k;
+        p.z += (p.tz - p.z) * k;
+      }
+      if (now > p.chT) { // the occasional glyph flip
+        p.ch = ri();
+        p.chT = now + 260 + Math.random() * 1100;
+      }
+      const wob = Math.sin(T * 2 + i * 1.7) * 0.4;
+      shifterSys.pos[i * 3] = p.x + wob;
+      shifterSys.pos[i * 3 + 1] = p.y;
+      shifterSys.pos[i * 3 + 2] = p.z;
+      shifterSys.glyph[i] = p.ch;
+      shifterSys.alpha[i] = (p.c === 1 ? 0.35 : p.base) * p.amp;
+      shifterSys.size[i] = p.c === 1 ? 5.6 : 4.3;
+      shifterSys.setTint(i, p.c);
+    }
+    shifterSys.dirty();
+  }
+
+  // board
+  tv.alpha += (tv.target - tv.alpha) * (1 - Math.pow(0.9, dt * 60));
+  tvMat.opacity = 0.95 * tv.alpha;
+  // pull the current video frame through the 2D canvas every rAF — the only
+  // path that survives AMD hw-decode, rVFC death, and invisible-video pruning
+  if (tv.video && tv.video.readyState >= 2 && tvMat.map) {
+    const vw = tv.video.videoWidth, vh = tv.video.videoHeight;
+    if (vw && (tvCanvas.width !== vw || tvCanvas.height !== vh)) { tvCanvas.width = vw; tvCanvas.height = vh; }
+    try { tvCtx.drawImage(tv.video, 0, 0, tvCanvas.width, tvCanvas.height); tvMat.map.needsUpdate = true; window.__tvLastDraw = performance.now(); } catch { /* decoder mid-seek */ }
+  }
+  window.__beatFrames = (window.__beatFrames || 0) + 1; // heartbeat: proves the render loop is alive
+  if (tv.target === 0 && tv.alpha < 0.01 && tv.on) { tv.on = false; tvPlane.visible = false; tvStopVideo(); stateLine(); }
+  for (const [nm, s] of summons) {
+    const st = s.st;
+    st.alpha += (st.target - st.alpha) * (1 - Math.pow(st.dissolving ? 0.955 : 0.9, dt * 60));
+    s.lineMat.opacity = 0.55 * st.alpha * (st.dissolving ? 0.5 : 1);
+    s.sys.mat.uniforms.uRise.value = st.dissolving ? (1 - st.alpha) * 36 : 0;
+    for (let i = 0; i < s.ng; i++) s.sys.alpha[i] = (s.sys.size[i] > 7 ? 0.92 : 0.55) * st.alpha;
+    s.sys.dirty();
+    if (st.dissolving && st.alpha < 0.01) summonDrop(nm);
+  }
+  board.alpha += (board.target - board.alpha) * (1 - Math.pow(board.dissolving ? 0.955 : 0.9, dt * 60));
+  panelMat.opacity = 0.44 * board.alpha * (board.dissolving ? 0.4 : 1);
+  if (board.alpha > 0.01 && board.mode) {
+    boardCleared = false;
+    if (board.target > 0) boardUpdate(T);
+    boardSys.mat.uniforms.uRise.value = board.dissolving ? (1 - board.alpha) * 36 : 0;
+    const goldAll = board.dissolving;
+    for (let i = 0; i < BC; i++) {
+      const r = (i / BW) | 0, c = i % BW;
+      const reveal = Math.max(0, Math.min(1, (board.alpha - board.rev[i]) * 6));
+      if (reveal <= 0) {
+        boardSys.alpha[i] = 0;
+        boardSys.alpha[BC + i] = 0;
+        continue;
+      }
+      if (Math.random() < 0.01) board.chs[i] = ri();
+      const border = r === 0 || r === BH - 1 || c === 0 || c === BW - 1;
+      if (border) {
+        const corner = (r === 0 || r === BH - 1) && (c === 0 || c === BW - 1);
+        boardSys.glyph[i] = corner ? PLUS : board.chs[i];
+        boardSys.alpha[i] = (corner ? 0.85 : 0.3) * reveal;
+        boardSys.setTint(i, goldAll ? 2 : corner ? 1 : 3);
+        boardSys.alpha[BC + i] = 0;
+        continue;
+      }
+      const b = board.buf[i], gd = board.gold[i];
+      boardSys.glyph[i] = board.chs[i];
+      boardSys.alpha[i] = b > 0.05 ? Math.min(1, b) * reveal : 0;
+      boardSys.setTint(i, goldAll ? 2 : b > 0.8 ? 1 : 0);
+      boardSys.glyph[BC + i] = board.chs[i];
+      boardSys.alpha[BC + i] = gd > 0.05 ? Math.min(1, gd) * reveal : 0;
+    }
+    boardSys.dirty();
+  } else if (board.alpha <= 0.01) {
+    if (board.dissolving) { board.mode = null; board.dissolving = false; stateLine(); }
+    if (!boardCleared) {
+      boardCleared = true;
+      boardSys.alpha.fill(0);
+      boardSys.dirty();
+    }
+  }
+
+  // conjured form
+  conj.alpha += (conj.target - conj.alpha) * (1 - Math.pow(conj.dissolving ? 0.955 : 0.92, dt * 60));
+  if (conj.alpha > 0.01 && conj.shape) {
+    const rise = conj.dissolving ? (1 - conj.alpha) * 36 : 0;
+    conjGroup.position.set(168, 64 + rise, -26);
+    conjGroup.rotation.set(0.42, T * 0.45, 0);
+    conjLineMat.opacity = 0.26 * conj.alpha;
+    conjLineMat.color.setRGB(...(conj.dissolving ? PAL[2] : PAL[0]));
+    const tintIdx = conj.dissolving ? 2 : 1;
+    for (let i = 0; i < conj.ng; i++) {
+      conjSys.alpha[i] = (conjSys.size[i] > 7 ? 0.92 : 0.55) * conj.alpha;
+      conjSys.setTint(i, conjSys.size[i] > 7 ? tintIdx : conj.dissolving ? 2 : 0);
+      if (Math.random() < 0.012) conjSys.glyph[i] = ri();
+    }
+    for (let i = conj.ng; i < MAX_CG; i++) conjSys.alpha[i] = 0;
+    conjSys.mat.uniforms.uRise.value = 0; // rise rides the group, keeping lines and glyphs together
+    conjSys.dirty();
+  } else if (conj.alpha <= 0.01) {
+    if (conj.dissolving) { conj.shape = null; conj.dissolving = false; stateLine(); }
+    if (conjLineMat.opacity !== 0) {
+      conjLineMat.opacity = 0;
+      conjSys.alpha.fill(0);
+      conjSys.dirty();
+    }
+  }
+
+  composer.render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- scene-state probe — the agent's proprioception -----------------------
+// Structured truth about what the viewer is seeing, so agents can ASSERT the
+// scene instead of guessing from screenshots (screenshot judgment passes ~46%
+// of broken 3D scenes; state assertions don't — research/visual-llms).
+// Read-only: touches nothing visible. Motion is measured, not inferred: a fixed
+// particle sample is tracked across a real time window.
+window.__SCENE_STATE__ = async (motionMs = 320) => {
+  const K = 96, idx = [];
+  for (let i = 0; i < K; i++) idx.push(((i * 2654435761) >>> 0) % N);
+  const before = idx.map((i) => [parts[i].x, parts[i].y, parts[i].z]);
+  const t0 = performance.now();
+  await new Promise((res) => setTimeout(res, motionMs));
+  const winMs = performance.now() - t0;
+  let sum = 0, max = 0;
+  idx.forEach((i, k) => {
+    const p = parts[i], b = before[k];
+    const d = Math.hypot(p.x - b[0], p.y - b[1], p.z - b[2]);
+    sum += d; if (d > max) max = d;
+  });
+  let accents = 0, cx = 0, cy = 0, cz = 0;
+  for (const p of parts) { if (p.c === 1) accents++; cx += p.x; cy += p.y; cz += p.z; }
+  cx /= N; cy /= N; cz /= N;
+  const camDist = camera.position.distanceTo(new THREE.Vector3(cx, cy, cz));
+  const ndc = new THREE.Vector3(cx, cy, cz).project(camera);
+  return {
+    t: Date.now(),
+    form, pendingForm,
+    paused: __paused,
+    reducedMotion: reduced,
+    particles: { total: N, accents },
+    animation: {
+      type: liveAnim ? liveAnim.type : null,
+      driven: !!liveAnim && !__paused && !reduced,
+      meanDrift: +(sum / K).toFixed(3), // world units moved over windowMs
+      maxDrift: +max.toFixed(3),
+      windowMs: Math.round(winMs),
+    },
+    bbox: window.__formBBox(),
+    centroid: { x: +cx.toFixed(1), y: +cy.toFixed(1), z: +cz.toFixed(1) },
+    camera: {
+      pos: { x: +camera.position.x.toFixed(1), y: +camera.position.y.toFixed(1), z: +camera.position.z.toFixed(1) },
+      target: { x: +controls.target.x.toFixed(1), y: +controls.target.y.toFixed(1), z: +controls.target.z.toFixed(1) },
+      fov: camera.fov,
+      distToForm: +camDist.toFixed(1),
+      formOnScreen: {
+        x: +ndc.x.toFixed(3), // NDC: -1 left edge … +1 right edge of the viewer's screen
+        y: +ndc.y.toFixed(3),
+        visible: ndc.z < 1 && Math.abs(ndc.x) <= 1 && Math.abs(ndc.y) <= 1,
+      },
+    },
+    board: { shown: board.target > 0, mode: board.target > 0 ? board.mode : null },
+    conjured: { shown: conj.target > 0, shape: conj.target > 0 ? conj.shape : null },
+    viewport: { w: innerWidth, h: innerHeight },
+    // the world atlas — the fixed frame everything above lives in. The world
+    // LOOKS infinite; these are its real dimensions and named places.
+    world: {
+      unit: "wu (world units)",
+      up: "+Y",
+      origin: "grid center at ground level",
+      groundY: 0,
+      gridMinorCell: 60,
+      gridMajorCell: 300,
+      groundPlane: 4200,
+      gridVisibleRadius: 1500,
+      fog: { near: 700, far: 1800 },
+      rain: { radius: [150, 770], height: 320 },
+      defaultOrbitTarget: { x: TARGET.x, y: TARGET.y, z: TARGET.z },
+    },
+    landmarks: {
+      board: {
+        pos: { x: B_CENTER.x, y: B_CENTER.y, z: B_CENTER.z },
+        yaw: B_YAW,
+        size: { w: +(BW * CW + 16).toFixed(1), h: +(BH * CH + 16).toFixed(1) },
+        shown: board.target > 0,
+      },
+      conjured: {
+        pos: {
+          x: +conjGroup.position.x.toFixed(1),
+          y: +conjGroup.position.y.toFixed(1),
+          z: +conjGroup.position.z.toFixed(1),
+        },
+        shown: conj.target > 0,
+      },
+    },
+  };
+};
+
+// ---------- agent view — the agent's OWN camera, never the user's ---------------
+// Renders the scene through a separate camera into an offscreen target and
+// returns a PNG dataURL + the pose. The user's canvas is untouched (the main
+// loop repaints the next frame). preset "top" = orthographic map — spatial
+// relations become 2D reading instead of perspective guessing. overlay draws
+// axes + landmark labels INTO THE AGENT'S IMAGE ONLY.
+window.__AGENT_VIEW__ = (opts = {}) => {
+  const W = Math.min(1600, opts.w || 800);
+  const H = Math.min(1200, opts.h || 600);
+  const tgt = opts.target
+    ? new THREE.Vector3(opts.target.x, opts.target.y, opts.target.z)
+    : TARGET.clone();
+  let cam;
+  if (opts.preset === "top") {
+    const span = opts.span || 700;
+    const cx = (opts.center && opts.center.x) || 0;
+    const cz = (opts.center && opts.center.z) || 0;
+    const a = W / H;
+    cam = new THREE.OrthographicCamera((-span * a) / 2, (span * a) / 2, span / 2, -span / 2, 1, 2500);
+    cam.position.set(cx, 1100, cz);
+    cam.up.set(0, 0, -1); // north (-Z) points up the image
+    cam.lookAt(cx, 0, cz);
+  } else {
+    cam = new THREE.PerspectiveCamera(opts.fov || 55, W / H, 1, 5000);
+    if (opts.pos) cam.position.set(opts.pos.x, opts.pos.y, opts.pos.z);
+    else {
+      const yaw = opts.yaw ?? 0.9, pitch = opts.pitch ?? 0.3, dist = opts.dist ?? 460;
+      cam.position.set(
+        tgt.x + dist * Math.cos(pitch) * Math.sin(yaw),
+        tgt.y + dist * Math.sin(pitch),
+        tgt.z + dist * Math.cos(pitch) * Math.cos(yaw)
+      );
+    }
+    cam.lookAt(tgt);
+  }
+  cam.updateMatrixWorld(true);
+  cam.updateProjectionMatrix();
+  const rt = new THREE.WebGLRenderTarget(W, H, { samples: 4 });
+  renderer.setRenderTarget(rt);
+  renderer.render(scene, cam);
+  const px = new Uint8Array(W * H * 4);
+  renderer.readRenderTargetPixels(rt, 0, 0, W, H, px);
+  renderer.setRenderTarget(null);
+  rt.dispose();
+  const cv2 = document.createElement("canvas");
+  cv2.width = W; cv2.height = H;
+  const ctx = cv2.getContext("2d");
+  const img = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y++)
+    img.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4);
+  ctx.putImageData(img, 0, 0);
+  if (opts.overlay !== false) {
+    const P = (v) => {
+      const p = v.clone().project(cam);
+      return [(p.x * 0.5 + 0.5) * W, (1 - (p.y * 0.5 + 0.5)) * H, p.z];
+    };
+    const seg = (a, b, col, label) => {
+      const A = P(a), B = P(b);
+      if (A[2] > 1 || B[2] > 1) return;
+      ctx.strokeStyle = col; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
+      if (label) { ctx.fillStyle = col; ctx.font = "12px monospace"; ctx.fillText(label, B[0] + 4, B[1] - 4); }
+    };
+    const O = new THREE.Vector3(0, 0, 0);
+    seg(O, new THREE.Vector3(150, 0, 0), "#ff7a4d", "+X");
+    seg(O, new THREE.Vector3(0, 150, 0), "#4dd9ff", "+Y");
+    seg(O, new THREE.Vector3(0, 0, 150), "#ff4dd9", "+Z");
+    const mark = (v, label) => {
+      const A = P(v); if (A[2] > 1) return;
+      ctx.fillStyle = "#eaffee";
+      ctx.beginPath(); ctx.arc(A[0], A[1], 3, 0, Math.PI * 2); ctx.fill();
+      ctx.font = "12px monospace"; ctx.fillText(label, A[0] + 6, A[1] + 4);
+    };
+    let mx = 0, my = 0, mz = 0;
+    for (const p of parts) { mx += p.x; my += p.y; mz += p.z; }
+    mark(new THREE.Vector3(mx / N, my / N, mz / N), "avatar:" + form);
+    if (board.target > 0) mark(B_CENTER, "board:" + board.mode);
+    if (conj.target > 0) mark(conjGroup.position, "conjured:" + conj.shape);
+    ctx.fillStyle = "#9fd8b4"; ctx.font = "11px monospace";
+    const pose = opts.preset === "top"
+      ? `top-ortho span=${opts.span || 700}wu (north = -Z, up the image)`
+      : `pos(${cam.position.x.toFixed(0)},${cam.position.y.toFixed(0)},${cam.position.z.toFixed(0)}) fov=${cam.fov}`;
+    ctx.fillText(`agent view · ${pose} · grid cell=60wu · +Y up`, 8, H - 8);
+  }
+  return {
+    image: cv2.toDataURL("image/png"),
+    camera: opts.preset === "top"
+      ? { preset: "top", span: opts.span || 700, center: { x: cam.position.x, z: cam.position.z } }
+      : {
+          pos: { x: +cam.position.x.toFixed(1), y: +cam.position.y.toFixed(1), z: +cam.position.z.toFixed(1) },
+          target: { x: tgt.x, y: tgt.y, z: tgt.z },
+          fov: cam.fov,
+        },
+    size: { w: W, h: H },
+  };
+};
+</script>
+</body>
+</html>

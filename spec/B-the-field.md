@@ -1,112 +1,164 @@
 # Phase B Spec — The Field (Jack In)
 
-> The world behind the Eye: an infinite digital field. DarkSaddler is a
-> tower — Barad-dûr by way of Tron. His workers are digital specters.
-> Where they work, reality glitches.
+> A second way to talk to your agents. The Eye is the ambient interface —
+> a glance and a voice over the desktop. The Field is the immersive one —
+> a 3D place you enter, where agents take form and show you things in
+> real time. Same agents, same bridge, two interfaces.
 
-Status: DRAFT v2 — reshaped by Oscar 2026-08-11 (3D field replaces the 2D
-Matrix-rain concept; truth rules carried over unchanged).
-Live concept demo: https://claude.ai/code/artifact/bc48cc4e-6a51-4047-b12d-2715028e6d8b
+Status: DRAFT v4 — 2026-08-19, reconciled after adversarial review.
+Oscar's five calls that shaped this draft:
+(1) the Eye and the Field are two different interfaces to the same agents;
+(2) VR only for now — AR parked until the platforms actually ship it;
+(3) the old Tower world was demo scaffolding — re-spaced freely;
+(4) local-only for the MVP;
+(5) it's an interface — don't make it more complicated than it is.
 
-## 1. The world
+Live concept demo (v5, iterated at the same URL):
+https://claude.ai/code/artifact/bc48cc4e-6a51-4047-b12d-2715028e6d8b
+Demo source: `spec/field-demo.html`.
 
-- **Infinite digital field:** endless grid plane fading into fog. Empty and
-  quiet when nothing runs — the field never fakes activity.
-- **DarkSaddler = the Tower.** A dark spire at the center, the Eye burning
-  between its prongs. Not a widget: a monument. The orchestrator watches
-  from above.
-- **Subagents = specters.** Ghost-figures of particles rising from the field
-  when dispatched, drifting while they work, dissolving upward in gold when
-  done.
-- **Work = glitch.** Around a working specter, reality tears: glitch-static
-  shards, and fragments of its *real* event stream (file paths, tool names)
-  surfacing through the noise for a moment. Violence of the static ≈ how hard
-  it's working.
+History: v1 2D Matrix rain → v2 3D field with Tower (2026-08-11) →
+v3 Tower dropped, shapeshifter + design-discussion purpose + multi-lens
+(2026-08-19) → v4 this draft (same day).
 
-## 2. Truth rules (unchanged from v1 — the law)
+## 1. What it is
 
-1. Every visible thing is caused by a real event. No decorative activity.
-2. Empty field = honest field. No agents, no specters, dim grid.
-3. Color is status: green = working · red = the Gaze/Call · gold = done ·
-   grey = stood down.
-4. Field density/brightness breathes with real load.
+- **An interface, served as a web page.** One live three.js scene. Opened
+  in a desktop browser today; a Quest opens the same URL in VR later. The
+  Electron body may embed it as a flat lens but can never BE the VR window
+  — Electron ships no immersive WebXR (electron/electron#35011).
+- **The main agent is a shapeshifter.** One glyph mass that takes any
+  form — eye, figure, hound, ghost, wave — and grows more. No monuments.
+- **Purpose: real-time visual conversation.** Discussing designs: summon a
+  tableboard and put waves or plots on it, conjure forms, morph them as
+  the conversation moves. His frame: "a game engine but also a real-time
+  field."
+- Voice keeps flowing through the Eye (existing push-to-talk + hub
+  routing). The Field is the visual half of the same conversation.
 
-## 3. The Gaze (the Call, in-world)
+## 2. The law (lean)
 
-When an agent needs Oscar (approval / awaited failure):
+1. Nothing appears unless an agent or Oscar asked for it. Asked-for
+   content is a real cause; unrequested decoration stays illegal.
+2. Empty field = honest field.
+3. Where status is shown, color is status: green working · red the call ·
+   gold done/dissolved. Conjured content is content, not status — a red
+   car is just a red car.
+4. The field never opens by itself.
 
-- The Eye turns **red**; its **beam holds the calling specter** — visible
-  from anywhere on the field, and from the corner knot (ring burns red).
-- The specter freezes mid-work, static slows. A ground ring pulses.
-- One ring sound (Phase A rule). Then it waits — forever if needed.
-- Focus the specter → DarkSaddler states the pending action → approve/deny
-  by voice. Voice monopoly holds: specters never speak.
+## 3. The world — Matrix skin (main theme)
 
-## 4. Modes (from Phase A, unchanged)
+- Infinite grid fading into fog, 3D glyph rain. In this skin everything
+  is woven from Matrix characters — the shapeshifter, the board, the
+  glitches.
+- **Forms are TRUE 3D** (his call, 2026-08-19, on seeing the flat MVP:
+  "forms shouldn't be 2D in a 3D world"): real meshes (glTF, CC0/CC-BY,
+  attributed in `field/assets/`) surface-sampled into glyph particle
+  bodies — load a 3D dog, transform it into the Matrix hound. Forms: eye
+  (default, procedural), hound, figure, ghost, wave — grow the bestiary
+  from real models.
+- **Quality bar:** the field must read as a designed engine, not a school
+  project — glyph-atlas instanced shader, bloom, fog, a scene that
+  survives orbiting from any angle. The v5 demo's flat outlines were
+  proof-of-concept only.
+- **Tableboard = a TV in the world** (his call, 2026-08-19): the world is
+  Matrix, but what plays ON the board is content — real graphs, charts,
+  images, anything an agent needs to show. Glyph modes (waves, lissajous,
+  bars — MVP-validated and approved) are just one channel; real content
+  renders as a texture on the plane, pushed over the bridge. No forced
+  glyphification of content.
+- **Conjured forms:** procedural/wireframe primitives now (cube, torus,
+  ...). Real assets later (§5).
+- Dissolve is always gold.
 
-- **Eye mode:** the whole field lives in a small knot over the desktop —
-  color and motion readable, words not. That's the point.
-- **Jack in:** same simulation, fullscreen. A zoom, never a launch.
+## 4. Architecture (MVP — local only)
 
-## 5. Interacting inside
+- **The Field is its own application** (his call, 2026-08-19): a standalone
+  server + web page, separate from the Eye's Electron body. It lives at
+  `field/` in this repo, runs in WSL (Node) as a real npm project with
+  three.js as a true dependency, owns its scene truth, and keeps running
+  whether or not the Eye is up. The Eye carries NO field code. Windows browsers reach it
+  via WSL2 localhost forwarding.
+- The page owns the render; the field server owns scene state (current
+  form, board mode, conjured shape). Late-opening pages receive the
+  current state on connect.
+- Small field ops as tiny JSON: spawn / morph / board / conjure / dismiss,
+  driven from any brain via the bridge client. Push to open pages over
+  SSE.
+- The Eye and the Field are two clients of the same agents — neither
+  contains the other. Shared secret auth on both; local machine only for
+  the MVP. Exposing to LAN/headset is a later, deliberate decision.
+- No perf ceremony at this scale: procedural ops are one POST + client
+  render. Budgets matter when real assets arrive, not before.
+- **The spatial reference** (his call, 2026-08-23: "the field must have a
+  good reference of the surroundings — size, positions, camera angles;
+  the agent's camera is different from the user's, and agents need
+  both"). The world looks infinite but has a real, named frame, and
+  agents perceive it through three channels:
+  1. **The world atlas** — `__SCENE_STATE__().world` + `.landmarks`:
+     units (wu), +Y up, origin at grid center, grid cells 60/300 wu,
+     ground plane 4200, fog 700→1800, and every landmark (board,
+     conjured, avatar bbox) with position and size. Space is stated,
+     never guessed.
+  2. **The agent's own eye** — `__AGENT_VIEW__({yaw,pitch,dist | pos,
+     target, fov})`: an offscreen render from ANY angle, moved at will,
+     returned as PNG + pose. Never touches the user's canvas. Optional
+     overlay draws axes + landmark labels into the agent's image only.
+     `preset: "top"` = orthographic map (north = -Z up the image) —
+     spatial relations become 2D reading instead of perspective
+     guessing.
+  3. **The user's perspective** — `__SCENE_STATE__().camera` (pos,
+     target, fov, what's on the user's screen in NDC) plus the page
+     screenshot. Agents always know what the user is seeing, and can
+     tell their own view apart from the user's.
+  4. **The camera law** (his call, 2026-08-23): the user's camera NEVER
+     moves on its own — auto-rotate is dead. The one exception is the
+     agent's `look` op (glide his view to frame board / avatar /
+     conjured / center / a point), which exists because he asked for
+     it — and his drag cancels the glide instantly. His hand always
+     wins.
 
-- Camera: orbit + zoom (demo-validated). Free-fly is a later upgrade if the
-  field ever becomes a place to inhabit rather than glance. (Supersedes old
-  D4.)
-- Focus a specter (click / look) + push-to-talk = asking *about* it.
-  Focus card shows: name, state, recent trail (last ~6 events). (Old D5:
-  resolved as recent-trail.)
-- Approvals resolved in-world by voice.
+## 5. Later (parked until a real conversation starves for it)
 
-## 6. Parked for later phases (Oscar, 2026-08-11)
+- Quest 3 VR lens — same URL; needs the HTTPS/secure-context + LAN
+  decision made on purpose.
+- Themes as skins: a "real" PBR skin beside Matrix. Glyphifying arbitrary
+  meshes is a design problem, not a shader toggle.
+- Agents present real assets: glTF/.glb pipeline ("design this car" →
+  asset in ~30s–minutes via cloud text-to-3D → materializes in-field).
+- AR passthrough: Quest today, Vision Pro when Safari ships immersive-ar.
+- Specters/subagent presence + the Gaze in-world (from v2) — re-enters
+  when agent-watching becomes a field activity, redesigned without the
+  Tower.
+- **Voice in the Field** — BUILT 2026-08-23, self-contained (his call:
+  "the field is a completely different app"): browser mic (`voice ●`
+  button → SSE `voice` op → any listening agent) and browser TTS
+  (`field say`). No Eye involved. Still later: headset mic, better
+  voices, hands-free wake.
+- **Summon anything** — PARTLY BUILT 2026-08-23: `field summon` takes
+  arbitrary wireframe geometry (any form an agent can write, ≤340
+  edges — first: a DNA double helix generated on request), and
+  `field tv` puts any image on the board (the TV is real; first
+  broadcast: a poverty chart drawn from model memory, labeled so).
+  Still later: solid/textured meshes, and SOUND (agent-conjured audio
+  in the world).
+- **Locomotion** — avatars that actually move through the world (his
+  call 2026-08-19: MVP = good IDLE animations only; walking-in-place
+  rejected — movement comes later, done properly).
+- **ENDGAME (his words, 2026-08-19, on seeing the real engine): a world
+  the agent can construct** — terrain, structures, spaces; the field as
+  a constructible world, not a fixed stage.
+- Voice input from inside a headset.
 
-- **Agents present their work in-world:** a specter (or DarkSaddler) can
-  raise a demo — a floating pane/projection in the field showing a running
-  UI, a chart, a result — "show me what you built" answered visually, in
-  place. DarkSaddler may drive the interface to show things. This is a
-  Phase D+ capability; the field's design must not block floating panes.
+## 6. The MVP slice
 
-## 7. Asset backlog (his call 2026-08-11: "a lot of different 3D Matrix models")
+Oscar opens `/field` in a browser, talks to a session through the Eye as
+usual, asks for a board with waves and a conjured form, watches them
+appear in real time, says dismiss, sees gold, closes the tab. Reading
+nothing.
 
-The world's look is **Matrix aesthetic in 3D** — phosphor-green glyphs are
-the universal material. Models to design over time (each can start crude and
-be reshaped in the demo loop):
+## 7. Working method
 
-- **Everything is glyphs** (his law, 2026-08-11): the Eye, the creatures,
-  the glitches — all woven from Matrix characters. No plain particles, no
-  smooth meshes as final look.
-- **The Tower** — must be *very, very awesome*. Current: code-clad spire,
-  orbiting glyph rings, Eye woven from glyphs (almond outline + iris ring +
-  slit). Expect many iterations.
-- **Workers wear forms** — animals, ghosts, people; not all floating.
-  Current set: glyph *figure* (stands), glyph *hound* (four paws down),
-  glyph *ghost* (floats). Grow the bestiary per agent type — a scout should
-  not look like a refactorer.
-- **Rain / field / sky** — 3D rain curtains, horizon, ground materials.
-- Later: demo-panes (§6), per-project landmarks, idle fauna(?).
-
-**Noted 2026-08-11 (his verdict on demo v4 — park, don't fix yet):**
-- Current creature designs are **too basic** — real modeling pass needed
-  (proper silhouettes, density variation, maybe skeletal motion).
-- The **glitch effect is not good** — needs a real VFX design (screen-space
-  distortion? chromatic tearing? glyph corruption waves?), not random
-  sprite bursts.
-- **Agents should wander** the field while working — creatures move, not
-  stand pinned at a spawn point. (Motion design: per-form gaits.)
-- Mockup approved as concept reference despite all three.
-
-**Talking to the Tower:** the Eye on the tower IS DarkSaddler — focusing the
-tower + push-to-talk = talking to him directly (field report, dispatch,
-anything). Demo-validated: click tower → he reports the field state.
-
-## 8. Working method note
-
-Concept demos in the artifact (same URL, iterated live) are the design tool
-for this project: discuss near-real-time, see it, reshape it. Faster than
-prose specs for anything visual — spec files record what the demo settles.
-
-## 9. Phase B is done when
-
-Oscar jacks in while two real subagents work, sees two specters glitching
-with their actual events, the Gaze catches one needing approval, he
-approves by voice, watches it finish gold, and surfaces — reading nothing.
+Concept demos in the artifact (same URL, iterated live) are the design
+tool: discuss near-real-time, see it, reshape it. Spec files record what
+the demo settles.

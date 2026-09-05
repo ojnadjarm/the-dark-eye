@@ -1,0 +1,14 @@
+{
+  "name": "dark-eye-field",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Field — standalone 3D interface to Oscar's agents (spec B). Own server, own scene truth; the Eye carries no field code.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "^1.13.6",
+    "three": "^0.185.1"
+  }
+}
