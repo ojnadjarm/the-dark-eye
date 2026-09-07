@@ -1,132 +1,96 @@
 # The Dark Eye
 
-A voice-first AI assistant that lives on the Windows desktop as an ethereal
-cat-eye of Matrix glyphs. Oscar holds a key and talks; a Claude brain answers
-out loud through a local voice. Any number of Claude sessions can connect as
-named "brains" — a hub routes his voice to one of them at a time, switched by
-voice or from the tray.
+A voice-first AI presence for this laptop: an ethereal cat-eye of Matrix glyphs
+floating over the TV. Oscar opens his mic and talks; the Claude orchestrator
+session hears him and answers out loud through a local voice. No cloud in the
+loop — speech in and speech out both run on the CPU.
 
-Design: `DESIGN.md` · Specs: `spec/` · Live ops + hard-won facts: `RUNBOOK.md`
+Design: `DESIGN.md` · Plans: `PLAN-UBUNTU.md`, `PLAN-LOWRES.md`, `PLAN-GPU.md` · Specs: `spec/` · Ops: `RUNBOOK.md`
 
 ## Architecture
 
 ```
-┌─ Windows ────────────────────────────────┐   ┌─ WSL2 ──────────────────────┐
-│ body/  (Electron)                        │   │ brain/  "fast" (~2s)        │
-│  · Eye overlay (transparent, click-thru) │◄──┤  Claude Agent SDK + SOUL.md │
-│  · TTS Kokoro + STT Parakeet (CPU)       │   │                             │
-│  · push-to-talk: tap Ctrl+Alt+Space      │◄──┤ Claude Code sessions "deep",│
-│  · session hub + tray roster             │   │  "cryptodesk", ... (~5-15s) │
-│  · MCP server + HTTP bridge on :8642     │   │  via bridge/eye.sh + /eye   │
-└──────────────────────────────────────────┘   └─────────────────────────────┘
+earbuds tap ──BlueZ AVRCP uinput──► ptt-earbuds.py ──POST /bridge/mic──┐
+keyboard (GNOME custom key) ──────► eye mic ───────────────────────────┤
+                                                                       ▼
+ TV HDMI-1 ◄── eye-render (Rust, XWayland) ◄── node body: bridge + voice worker
+ speakers/buds ◄── Kokoro TTS      Parakeet STT ◄── mic (PipeWire, HFP autoswitch)
+                                   bridge :8642 (127.0.0.1): speak listen mic status show
+                                          ▲
+                 tmux `claude` orchestrator ── /eye skill ── eye listen-loop / eye speak
 ```
 
-- **Body** — the Eye itself: overlay, voice in/out, hotkeys, tray, and the
-  server every brain talks to (MCP + plain-HTTP bridge, shared secret).
-- **Brains** — anything that can speak the bridge protocol. The fast brain is
-  a small Agent SDK loop; deep brains are full Claude Code sessions.
-- **Hub** — open session registry (unique name + color per brain; green is
-  reserved for the Eye). Voice routes to ONE active session; Oscar switches
-  by saying "switch to ⟨name⟩" or from the tray.
+- **Body** — plain node (`body/`): the HTTP bridge every brain talks to, the
+  queue, the intents, `voice.js` as a forked child (sherpa-onnx: Parakeet TDT
+  0.6B int8 in, Kokoro sid 17 out) and `pw-cat` children for speech and mic.
+  The eye itself is `body/render` — `eye-render`, a Rust overlay on x11rb,
+  under XWayland because a native Wayland surface cannot stay always-on-top.
+  One binary, two backends: since G07 it draws on the Intel iGPU through EGL +
+  GL ES (60 fps idle, 2.0 % of a core, 103 MB) and falls back to its own cairo
+  software renderer — 30 fps, 3.3 %, 30 MB — whenever EGL or GL fails, at start
+  or mid-run. `PLAN-GPU.md` is the design; `Environment=DARK_EYE_GPU=0` in a
+  unit drop-in is the whole rollback (`RUNBOOK.md`, "GPU backend"). Electron is left only for the canvas, spawned on "show me".
+- **Brain** — one, the always-on tmux `claude` orchestrator. It joins with the
+  `/eye` skill: a persistent `eye listen-loop` monitor is its ear, `eye speak`
+  is its mouth. Fleet agents may use `eye speak` / `eye status` for one-liners.
+- **Bridge** — plain HTTP on `127.0.0.1:8642` behind a shared secret. Any
+  curl-class client can possess the Eye; `bridge/eye.sh` (installed as `eye`)
+  is the reference client.
 
-## Quick start (everything already installed)
+## Quick start
 
-1. **Start the body** (from WSL):
+```bash
+systemctl --user start dark-eye     # the eye appears bottom-right on the TV
+eye health                          # {"ok":true,...}
+```
 
-   ```bash
-   powershell.exe -NoProfile -Command 'Stop-Process -Name electron -Force -ErrorAction SilentlyContinue; Start-Sleep 1; Set-Location C:\Users\Oscar\projects\the-dark-eye\body; Start-Process -FilePath ".\node_modules\electron\dist\electron.exe" -ArgumentList "." -WindowStyle Hidden'
-   ```
-
-   The Eye appears bottom-right. Note: every restart re-enables the cloak
-   (hidden from screen recorders) — tray checkbox toggles it.
-
-2. **Talk**: tap `Ctrl+Alt+Space` to open the mic (rings appear), tap again
-   to send. 90s auto-close failsafe.
-
-3. **Connect a Claude Code session** — type `/eye` in any session, or just
-   ask it to "connect to the eye". It registers itself, arms its ear, and
-   shows up in the tray. That's the whole procedure.
-
-4. **Fast brain** (optional, terminal chat + ~2s voice replies):
-
-   ```bash
-   cd ~/projects/the-dark-eye/brain && pnpm start
-   ```
+Then type `/eye` in a Claude session (or ask it to "connect to the eye"). It
+arms its ear and Oscar can talk. `eye mic on` opens his mic (rings appear,
+90 s failsafe), `eye mic off` sends what he said.
 
 ## Setup from scratch
 
-### Windows (the body)
+1. **Toolchain** — Node 24 (nvm), `cd body && pnpm install`. Two runtime deps:
+   `sherpa-onnx-node` and `electron` (the canvas only). The eye needs Rust:
+   `cd body/render && cargo build --release`.
+2. **Sandbox** — `kernel.apparmor_restrict_unprivileged_userns=1` breaks
+   Electron's sandbox helper, so the canvas needs the AppArmor profile
+   `/etc/apparmor.d/dark-eye-electron` (`flags=(unconfined) { userns, }`),
+   never `--no-sandbox`.
+3. **Models** (gitignored, from the sherpa-onnx releases) into `body/models/`:
+   `kokoro-multi-lang-v1_0` and
+   `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`. Voice check:
+   `node body/scripts/tts-test.js 17 "hola"`.
+4. **Fonts** — `fonts-noto-cjk` (glyph rain) and `fonts-dejavu` (captions).
+5. **Install** — `bash bridge/install.sh`: `eye` on PATH, the `/eye` skill in
+   `~/.claude/skills/eye/`, `dark-eye.service` enabled as a user unit.
+6. **Config** auto-generates at `~/.config/dark-eye/config.json` (mode 600):
+   `secret`, `port` (8642), `voiceSid` (17), `voiceSpeed`, `canvasZoom`.
 
-1. Node 24 LTS + pnpm (user-level via `npm i -g pnpm`).
-2. `cd body && pnpm install`, then run `node node_modules/electron/install.js`
-   manually — **pnpm 11 on Windows silently skips postinstall scripts**, so
-   Electron's binary never downloads on its own.
-3. STT model: `body/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/`
-   (encoder/decoder/joiner `.int8.onnx`, 16kHz). TTS (Kokoro multi-lang
-   v1.0) is fetched by the voice worker; voice test:
-   `node body/scripts/tts-test.js 17 "hello"`.
-4. Config auto-generates at `%APPDATA%\dark-eye\config.json`: `secret`
-   (shared key for all brains), `port` (8642), `voiceSid` (17 = the voice),
-   `voiceSpeed`.
+## The bridge
 
-### WSL (the brains)
+Plain HTTP, header `x-dark-eye-key: <secret>`. `eye help` prints the client.
 
-1. **The `/eye` skill** (plug-and-play for Claude Code sessions):
-
-   ```bash
-   bash bridge/install.sh
-   ```
-
-   Installs the skill to `~/.claude/skills/eye/` (user scope — every project
-   sees it). The skill teaches a session the full join procedure: check the
-   Eye is up → register a unique name → arm a persistent voice monitor with
-   `bridge/eye.sh listen-loop <name>` → speaking rules. The skill source of
-   truth is `bridge/SKILL.md`; re-run the installer after editing it.
-
-2. **`bridge/eye.sh`** needs zero setup — it resolves the Windows host
-   (default gateway from `/proc/net/route`) and the secret (from the config
-   above) on every run. `bridge/eye.sh help` lists all commands; try
-   `bridge/eye.sh sessions`.
-
-3. **Optional — MCP tools**: register the body's MCP server at user scope so
-   sessions also get native `mcp__dark-eye__*` tools:
-
-   ```bash
-   claude mcp add --scope user --transport http dark-eye \
-     "http://$(awk '$2=="00000000" {print $3; exit}' /proc/net/route | sed 's/../& /g' | awk '{printf "%d.%d.%d.%d", strtonum("0x"$4), strtonum("0x"$3), strtonum("0x"$2), strtonum("0x"$1)}'):8642/mcp" \
-     --header "x-dark-eye-key: <secret from config.json>"
-   ```
-
-   Re-run after a reboot if the WSL gateway IP changed (remove + add). The
-   `/eye` skill does NOT depend on this — the bridge script covers everything.
-
-## The bridge protocol
-
-Plain HTTP on `:8642`, header `x-dark-eye-key: <secret>` — full endpoint
-table in `RUNBOOK.md`. `bridge/eye.sh` wraps all of it:
-
-```
-eye.sh sessions                     roster + who has the voice
-eye.sh register <name> [brief]      join (hub assigns a color)
-eye.sh listen-loop <name>           emits "VOICE: ..." per utterance
-eye.sh speak <text>                 the Eye says it out loud
-eye.sh status <id> <state> <label>  orbiter around the eye
-eye.sh attention <name> on|off      tint the eye in your color
-```
+| Command | Endpoint | What |
+|---|---|---|
+| `eye speak <text> [--voice sid]` | `POST /bridge/speak` | say it out loud + caption |
+| `eye listen [ms]` / `eye listen-loop` | `GET /bridge/listen` | long-poll his words as `VOICE:` / `EVENT:` lines |
+| `eye mic [on\|off]` | `POST /bridge/mic` | open/close his mic (no arg = toggle) |
+| `eye status <id> <state> <label>` | `POST /bridge/status` | an orbiter around the eye |
+| `eye show <title> <file> [--ask]` | `POST /bridge/show` | put a visual on his canvas |
+| `eye health` | `GET /bridge/health` | body up, ear armed, mic open |
 
 ## Repo layout
 
-| Path      | What                                                        |
-|-----------|-------------------------------------------------------------|
-| `body/`   | Electron overlay: eye renderer, voice worker, hub, bridge   |
-| `brain/`  | Fast brain: Claude Agent SDK loop, soul from `soul/SOUL.md` |
-| `bridge/` | `eye.sh` client + `/eye` skill + installer                  |
-| `soul/`   | DarkSaddler persona (`SOUL.md`)                             |
-| `spec/`   | Phase specs: A the Eye (FINAL v2), B the Field              |
-| `RUNBOOK.md` | Ops: restart recipes, bridge API, hard-won facts, state  |
+| Path | What |
+|---|---|
+| `body/` | the node body: `src/main.js`, `server.js`, `voice.js`, `audio.js`, `canvas/`, and `render/` (the Rust eye) |
+| `bridge/` | `eye.sh` client, the `/eye` skill, `install.sh` |
+| `soul/` | DarkSaddler persona (`SOUL.md`) |
+| `spec/` | historical phase specs, and `eye-reference.html` — the Electron eye `render/` was ported from |
+| `field/` | the standalone 3D field app (out of scope of the rewrite) |
+| `RUNBOOK.md` | ops: start/stop, config, security, hard-won facts |
 
-## Troubleshooting
-
-Everything painful is already written down — read the **Hard-won facts**
-section of `RUNBOOK.md` first (pnpm postinstall skips, Electron napi buffer
-rule, WSL→Windows gateway vs DNS, transparency gotchas, TDZ in the renderer).
+The first body was built for another OS and a different topology (a session
+hub, a fast Agent SDK brain, a tray). All of it lives in git history at commit
+`2ff62d1`.

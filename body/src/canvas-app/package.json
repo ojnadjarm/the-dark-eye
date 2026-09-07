@@ -1,0 +1,7 @@
+{
+  "name": "canvas-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The Dark Eye — the canvas window, spawned only while he is looking.",
+  "main": "main.js"
+}

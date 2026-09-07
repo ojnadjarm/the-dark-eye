@@ -1,5 +1,7 @@
 # Phase B Spec — The Field (Jack In)
 
+*Historical (Windows-era, D9). Superseded by `PLAN-UBUNTU.md` and `PLAN-LOWRES.md`; the shipped look is `spec/eye-reference.html`, ported in `body/render`. Kept unrewritten.*
+
 > A second way to talk to your agents. The Eye is the ambient interface —
 > a glance and a voice over the desktop. The Field is the immersive one —
 > a 3D place you enter, where agents take form and show you things in

@@ -1,200 +1,49 @@
 /**
- * The body's MCP server — the contract any brain speaks (spec §8).
- * Stateless streamable HTTP on :8642, guarded by a shared secret header.
- * MCP tools: listen, speak, agent_status, attention, show (default session
- * "fast"). Plain-HTTP bridge: speak/listen/status/cloak/attention/active/
- * show/sessions (listen defaults to session "deep"). Oscar routes his voice
- * between sessions by saying "switch to <name>" — handled in main.js, not
- * here. listen can also deliver body events (channel-open, canvas-approved,
- * canvas-rejected) instead of a transcript.
- * The Field (spec B) is its OWN application at field/ — the body carries no
- * field code and serves no field routes.
+ * The bridge: the whole brain contract on 127.0.0.1, behind a shared secret.
+ * speak / listen / mic / status / show / health — one route table, one dispatcher.
  */
 const http = require("node:http");
-const os = require("node:os");
 const crypto = require("node:crypto");
-const { McpServer } = require("@modelcontextprotocol/sdk/server/mcp.js");
-const { StreamableHTTPServerTransport } = require("@modelcontextprotocol/sdk/server/streamableHttp.js");
-const { z } = require("zod");
 
-// Brains live in WSL2, so the server only needs the vEthernet (WSL) adapter —
-// binding it keeps the port off Wi-Fi/Ethernet, where the secret would be the
-// only gate between the LAN and Oscar's speakers.
-function wslAdapterAddress() {
-  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
-    if (!/wsl/i.test(name)) continue;
-    const v4 = (addrs ?? []).find((a) => a.family === "IPv4" && !a.internal);
-    if (v4) return v4.address;
-  }
-  return null;
-}
-
-// a bus item is either Oscar's words (string) or a body event (object) —
-// e.g. channel-open when he answers a held call, canvas-approved/rejected
-// when he judges a visual
-const asBridgePayload = (t) =>
-  t && typeof t === "object"
-    ? { transcript: null, event: t.event, detail: t.detail ?? "" }
-    : { transcript: t };
-const asMcpText = (t) =>
-  t && typeof t === "object" ? `[event: ${t.event}${t.detail ? " — " + t.detail : ""}]` : t ?? "";
-
-function buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, onShow, hub }) {
-  const mcp = new McpServer({ name: "dark-eye-body", version: "0.1.0" });
-
-  mcp.registerTool(
-    "register",
-    {
-      description:
-        "Join the Eye as a session. Pick a short name and optionally a hex color; both must " +
-        "be unique (green belongs to the Eye — it will be refused). Returns your final " +
-        "name/color and the full roster of sessions. Call this FIRST, then listen with your name.",
-      inputSchema: {
-        name: z.string().describe("Your session name, e.g. 'research' — lowercase, short"),
-        color: z.string().optional().describe("Preferred hex color like '#ff9a4d'; auto-assigned if taken/omitted"),
-        voice: z.number().optional().describe("Preferred Kokoro speaker sid 0-52 (17 is the Eye's — refused); auto-assigned if taken/omitted"),
-        brief: z.string().optional().describe("One line: what this session is doing"),
-      },
-    },
-    async ({ name, color, voice, brief }) => {
-      const r = await onRegister({ name, color, voice, brief });
-      return { content: [{ type: "text", text: JSON.stringify(r) }] };
-    }
-  );
-
-  mcp.registerTool(
-    "listen",
-    {
-      description:
-        "Wait for Oscar's next spoken words (push-to-talk). Long-polls up to timeoutMs; " +
-        "returns empty text if he said nothing in that window. Words arrive only while " +
-        "your session is the active voice channel (he says 'switch to <session>').",
-      inputSchema: {
-        timeoutMs: z.number().optional(),
-        session: z.string().optional().describe("Your registered session name (default 'fast' — register first and pass your own)"),
-      },
-    },
-    async ({ timeoutMs, session }) => {
-      hub.touch(session || "fast");
-      const t = await hub.bus(session || "fast").take(Math.min(timeoutMs ?? 50000, 55000));
-      return { content: [{ type: "text", text: asMcpText(t) }] };
-    }
-  );
-
-  mcp.registerTool(
-    "introduce",
-    {
-      description:
-        "Tell Oscar what this session is, in one short line (shown silently on the Eye " +
-        "and next to your name in the tray). Call once when you connect, and again if " +
-        "what you're working on changes.",
-      inputSchema: {
-        brief: z.string().describe("One line: what this session is doing, e.g. 'refactoring cryptodesk auth'"),
-        session: z.string().optional().describe("Session name (default 'fast')"),
-      },
-    },
-    async ({ brief, session }) => {
-      await onIntroduce({ session: session || "fast", brief });
-      return { content: [{ type: "text", text: "ok" }] };
-    }
-  );
-
-  mcp.registerTool(
-    "show",
-    {
-      description:
-        "Put something visual on Oscar's canvas — a mockup, a graph, a page. It NEVER opens " +
-        "by itself: he gets a silent pending mark by the eye and opens the canvas when he " +
-        "wants. Set verdict:true ONLY when you need an explicit decision — then he gets " +
-        "approve/reject buttons and the answer comes back on your listen channel as " +
-        "[event: canvas-approved] or [event: canvas-rejected]. Otherwise he just looks.",
-      inputSchema: {
-        title: z.string().describe("Short human title, e.g. 'login mockup v2'"),
-        data: z.string().describe("The content itself: full HTML, plain text, or a data: URL for an image"),
-        kind: z.enum(["html", "image", "text"]).optional().describe("Default 'html'"),
-        verdict: z.boolean().optional().describe("true = you need his approve/reject decision (default false)"),
-        session: z.string().optional().describe("Your registered session name (default 'fast')"),
-      },
-    },
-    async ({ title, data, kind, verdict, session }) => {
-      const r = await onShow({
-        session: session || "fast",
-        title,
-        kind: kind || "html",
-        data,
-        verdict: !!verdict,
-      });
-      return { content: [{ type: "text", text: JSON.stringify(r) }] };
-    }
-  );
-
-  mcp.registerTool(
-    "attention",
-    {
-      description:
-        "Ask for Oscar's attention without speaking: you join the hold queue — the Eye tints " +
-        "to your color when you reach the front, until he switches to you or you clear it. " +
-        "When he answers, your listen channel gets [event: channel-open]. Use when you need " +
-        "his input but he may be away or busy — never speak unprompted.",
-      inputSchema: {
-        on: z.boolean(),
-        label: z.string().optional().describe("Short reason, e.g. 'needs approval'"),
-        session: z.string().optional().describe("Session name (default 'fast')"),
-      },
-    },
-    async ({ on, label, session }) => {
-      await onAttention({ session: session || "fast", on, label });
-      return { content: [{ type: "text", text: "ok" }] };
-    }
-  );
-
-  mcp.registerTool(
-    "speak",
-    {
-      description:
-        "Speak to Oscar out loud through the Eye. This is your voice — use it to answer him. " +
-        "Plain spoken language, no markdown, under 150 words. Pass your session name so you " +
-        "speak with your session's own Kokoro voice; without it the Eye's default voice is used.",
-      inputSchema: {
-        text: z.string().describe("What to say, written for the ear"),
-        session: z.string().optional().describe("Your registered session name (default 'fast')"),
-      },
-    },
-    async ({ text, session }) => {
-      await onSpeak({ text, session: session || "fast" });
-      return { content: [{ type: "text", text: "spoken" }] };
-    }
-  );
-
-  mcp.registerTool(
-    "agent_status",
-    {
-      description:
-        "Report a subagent's state so the Eye can show it. Call when you spawn, progress, or finish delegated work.",
-      inputSchema: {
-        id: z.string().describe("Stable id of the subagent/task"),
-        state: z.enum(["working", "done", "error"]),
-        label: z.string().describe("Short human label, e.g. 'deps-updater · cryptodesk'"),
-      },
-    },
-    async ({ id, state, label }) => {
-      await onStatus({ id, state, label });
-      return { content: [{ type: "text", text: "ok" }] };
-    }
-  );
-
-  return mcp;
-}
-
+const HOST = "127.0.0.1";
 const BODY_MAX = 33_000_000; // ~32MB — inline base64 images fit, runaways don't
+const LISTEN_MS = 50_000;
+const LISTEN_MAX_MS = 55_000;
+const LISTENING_GRACE_MS = 90_000;
+const KINDS = ["html", "image", "text"];
 
-function readBody(req) {
+const json = (res, code, obj) =>
+  res.writeHead(code, { "Content-Type": "application/json" }).end(JSON.stringify(obj));
+
+const SOURCES = ["local", "remote", "both"];
+/** The owner's TV switch: `auto` is the ladder, `on`/`off` force it (E12). */
+const TV_MODES = ["auto", "on", "off"];
+
+/** A bus item is spoken words (a string or `{text, source}`) or a body event (object). */
+const payload = (t) => {
+  const item = t && typeof t === "object" ? t : { text: t };
+  const source = item.source === "remote" ? "remote" : "local";
+  return item.event
+    ? { transcript: null, event: item.event, detail: item.detail ?? "", source }
+    : { transcript: item.text ?? null, source };
+};
+
+/** Reads a JSON body, answering 413 itself if it runs over the cap (wire bytes). */
+function readBody(req, res) {
   return new Promise((resolve, reject) => {
+    if (Number(req.headers["content-length"]) > BODY_MAX) {
+      json(res, 413, { error: "body too large" });
+      res.once("finish", () => req.destroy());
+      return void reject(new Error("body too large"));
+    }
     let data = "";
+    let bytes = 0;
     req.on("data", (c) => {
+      bytes += c.length;
       data += c;
-      if (data.length > BODY_MAX) {
-        req.destroy();
+      if (bytes > BODY_MAX) {
+        json(res, 413, { error: "body too large" });
+        res.once("finish", () => req.destroy()); // the 413 must reach him before the socket dies
         reject(new Error("body too large"));
       }
     });
@@ -209,189 +58,107 @@ function readBody(req) {
   });
 }
 
-function startServer({ port, secret, onSpeak, onStatus, onCloak, onAttention, onActive, onIntroduce, onRegister, onShow, hub, log }) {
+function startServer({ port, secret, onSpeak, onListen, onMic, onMicOpen, onStatus, onOrbiters = () => [], onShow, onTv = () => ({ mode: "auto" }), log = () => {} }) {
   if (!secret) throw new Error("refusing to serve without a secret — check config.json");
   const secretBuf = Buffer.from(secret);
-  const keyMatches = (key) => {
+  const authed = (req) => {
+    const key = req.headers["x-dark-eye-key"];
     if (typeof key !== "string") return false;
     const keyBuf = Buffer.from(key);
     return keyBuf.length === secretBuf.length && crypto.timingSafeEqual(keyBuf, secretBuf);
   };
-  const authed = (req) => keyMatches(req.headers["x-dark-eye-key"]);
+
+  let listeners = 0;
+  let lastListen = 0;
+  /** A brain has an ear here: a listen is pending, or one returned very recently. */
+  const brainListening = () => listeners > 0 || Date.now() - lastListen < LISTENING_GRACE_MS;
+
+  const routes = {
+    "POST /bridge/speak": async (req, res) => {
+      const b = await readBody(req, res);
+      await onSpeak({
+        text: String(b?.text ?? ""),
+        voice: b?.voice === undefined ? undefined : Number(b.voice),
+        // no `to` means the source of the last thing heard, which only the body knows
+        to: SOURCES.includes(b?.to) ? b.to : undefined,
+      });
+      json(res, 200, { ok: true });
+    },
+    "GET /bridge/listen": async (req, res, u) => {
+      const raw = Number(u.searchParams.get("timeoutMs"));
+      const ms = Math.min(Number.isFinite(raw) && raw > 0 ? raw : LISTEN_MS, LISTEN_MAX_MS);
+      listeners++;
+      try {
+        json(res, 200, payload(await onListen(ms)));
+      } finally {
+        listeners--;
+        lastListen = Date.now();
+      }
+    },
+    "POST /bridge/mic": async (req, res) => {
+      const b = await readBody(req, res);
+      const on = await onMic(b && "on" in b ? !!b.on : undefined);
+      json(res, 200, { ok: true, on: !!on });
+    },
+    "POST /bridge/status": async (req, res) => {
+      const b = await readBody(req, res);
+      await onStatus({
+        id: String(b?.id ?? "task"),
+        state: b?.state === "done" || b?.state === "error" ? b.state : "working",
+        label: String(b?.label ?? ""),
+      });
+      json(res, 200, { ok: true });
+    },
+    "GET /bridge/status": (req, res) => json(res, 200, { ok: true, orbiters: onOrbiters() }),
+    "POST /bridge/show": async (req, res) => {
+      const b = await readBody(req, res);
+      const data = String(b?.data ?? "");
+      if (!data) return json(res, 400, { error: "no data" });
+      const id = await onShow({
+        title: String(b?.title ?? ""),
+        kind: KINDS.includes(b?.kind) ? b.kind : "html",
+        data,
+        verdict: !!b?.verdict,
+      });
+      json(res, 200, { ok: true, id: String(id) });
+    },
+    "GET /bridge/tv": (req, res) => json(res, 200, { ok: true, ...onTv() }),
+    "POST /bridge/tv": async (req, res) => {
+      const b = await readBody(req, res);
+      if (!TV_MODES.includes(b?.mode)) return json(res, 400, { error: "mode must be auto, on or off" });
+      json(res, 200, { ok: true, ...onTv(b.mode) });
+    },
+    "GET /bridge/health": (req, res) =>
+      json(res, 200, {
+        ok: true,
+        brainListening: brainListening(),
+        micOpen: !!onMicOpen(),
+        tv: onTv().mode,
+      }),
+  };
+
   const server = http.createServer(async (req, res) => {
     const u = new URL(req.url, "http://localhost");
-    if (!authed(req)) {
-      res.writeHead(401).end();
-      return;
-    }
-    // plain-HTTP side door for simple brains (curl-class clients)
-    if (req.url === "/bridge/speak" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        await onSpeak({
-          text: String(body?.text ?? ""),
-          session: body?.session ? String(body.session) : undefined,
-        });
-        res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
-      } catch (err) {
-        log(`bridge speak error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (req.url === "/bridge/cloak" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        await onCloak(!!body?.on);
-        res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
-      } catch (err) {
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (req.url === "/bridge/status" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        await onStatus({
-          id: String(body?.id ?? "task"),
-          state: body?.state === "done" || body?.state === "error" ? body.state : "working",
-          label: String(body?.label ?? ""),
-        });
-        res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
-      } catch (err) {
-        log(`bridge status error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (u.pathname === "/bridge/listen" && req.method === "GET") {
-      const rawMs = Number(u.searchParams.get("timeoutMs") || 50000);
-      const ms = Math.min(Number.isFinite(rawMs) && rawMs > 0 ? rawMs : 50000, 55000);
-      const session = u.searchParams.get("session") || "deep";
-      hub.touch(session);
-      const t = await hub.bus(session).take(ms);
-      res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(asBridgePayload(t)));
-      return;
-    }
-    if (req.url === "/bridge/show" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        const data = String(body?.data ?? "");
-        if (!data) {
-          res.writeHead(400, { "Content-Type": "application/json" }).end('{"error":"no data"}');
-          return;
-        }
-        const r = await onShow({
-          session: String(body?.session ?? "deep"),
-          title: String(body?.title ?? ""),
-          kind: ["html", "image", "text"].includes(body?.kind) ? body.kind : "html",
-          data,
-          verdict: !!body?.verdict,
-        });
-        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(r));
-      } catch (err) {
-        log(`bridge show error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (req.url === "/bridge/attention" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        await onAttention({
-          session: String(body?.session ?? "deep"),
-          on: !!body?.on,
-          label: body?.label ? String(body.label) : "",
-        });
-        res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
-      } catch (err) {
-        log(`bridge attention error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (req.url === "/bridge/register" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        const r = await onRegister({
-          name: body?.name,
-          color: body?.color,
-          voice: body?.voice,
-          brief: body?.brief ? String(body.brief) : undefined,
-          // harness messaging address — lets a live session WAKE this one
-          sock: body?.sock ? String(body.sock).slice(0, 256) : undefined,
-          // Claude conversation id — lets the necromancer resurrect it
-          sid: body?.sid ? String(body.sid).slice(0, 64) : undefined,
-        });
-        res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(r));
-      } catch (err) {
-        log(`bridge register error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (req.url === "/bridge/introduce" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        await onIntroduce({
-          session: String(body?.session ?? "deep"),
-          brief: String(body?.brief ?? ""),
-          sock: body?.sock ? String(body.sock).slice(0, 256) : undefined,
-          sid: body?.sid ? String(body.sid).slice(0, 64) : undefined,
-        });
-        res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
-      } catch (err) {
-        log(`bridge introduce error: ${err.message}`);
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (req.url === "/bridge/active" && req.method === "POST") {
-      try {
-        const body = await readBody(req);
-        await onActive(String(body?.session ?? "deep"));
-        res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
-      } catch (err) {
-        if (!res.headersSent) res.writeHead(500).end();
-      }
-      return;
-    }
-    if (req.url === "/bridge/sessions" && req.method === "GET") {
-      res.writeHead(200, { "Content-Type": "application/json" }).end(
-        JSON.stringify({ active: hub.active, sessions: hub.roster() })
-      );
-      return;
-    }
-    if (req.url !== "/mcp") {
-      res.writeHead(404).end();
-      return;
-    }
-    if (req.method !== "POST") {
-      res.writeHead(405, { Allow: "POST" }).end();
-      return;
+    if (!authed(req)) return void res.writeHead(401).end();
+    const route = `${req.method} ${u.pathname}`;
+    const handler = routes[route];
+    if (!handler) {
+      const allow = Object.keys(routes)
+        .filter((r) => r.endsWith(` ${u.pathname}`))
+        .map((r) => r.split(" ")[0]);
+      if (allow.length) return void res.writeHead(405, { Allow: allow.join(", ") }).end();
+      return void res.writeHead(404).end();
     }
     try {
-      const body = await readBody(req);
-      // Stateless: fresh server+transport per request.
-      const mcp = buildMcp({ onSpeak, onStatus, onAttention, onIntroduce, onRegister, onShow, hub });
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      res.on("close", () => {
-        transport.close();
-        mcp.close();
-      });
-      await mcp.connect(transport);
-      await transport.handleRequest(req, res, body);
+      await handler(req, res, u);
     } catch (err) {
-      log(`mcp error: ${err.message}`);
+      log(`bridge ${route}: ${err.message}`);
       if (!res.headersSent) res.writeHead(500).end();
     }
   });
-  const host = wslAdapterAddress();
-  if (host) server.listen(port, host, () => log(`MCP server on ${host}:${port}/mcp (WSL adapter only)`));
-  else {
-    log("WARN: WSL adapter not found — binding all interfaces; port 8642 is LAN-visible");
-    server.listen(port, "0.0.0.0", () => log(`MCP server on :${port}/mcp`));
-  }
+
+  server.brainListening = brainListening;
+  server.listen(port, HOST, () => log(`bridge on ${HOST}:${server.address().port}`));
   return server;
 }
 

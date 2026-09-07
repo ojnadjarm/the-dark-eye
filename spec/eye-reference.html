@@ -1,0 +1,786 @@
+<!doctype html>
+<!--
+  The look, as shipped in Electron on 2026-09-06. `body/render` is its port,
+  section for section. Visual reference only — this page is not runnable and
+  nothing loads it: the eye is `eye-render` (Rust) since E18. The line numbers
+  quoted in `body/render/src/*.rs` are the pre-move ones: subtract 5.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  canvas { display: block; width: 340px; height: 380px; }
+</style>
+</head>
+<body>
+<canvas id="c" width="340" height="380"></canvas>
+<script>
+  // half-width katakana — the condensed film look; the UI mono font has NO kana, so
+  // the glyph font must be named explicitly or Chromium picks one at random
+  const KATA = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎ0123456789';
+  const GLYPH_FONT = '"Noto Sans Mono CJK JP", "IPAGothic", monospace';
+  const kata = () => KATA[(Math.random() * KATA.length) | 0];
+  const gidx = () => (Math.random() * KATA.length) | 0;
+  const TAU = Math.PI * 2;
+
+  const c = document.getElementById('c');
+  const g = c.getContext('2d');
+
+  // crisp on scaled displays: device-pixel backing store
+  const dpr = window.devicePixelRatio || 1;
+  c.width = Math.round(340 * dpr);
+  c.height = Math.round(380 * dpr);
+
+  // -- layout: a cat eye at the bottom, words breathing just above it --------
+  const CX = 170, CY = 316;
+  const RX = 92, RY = 42;
+  const TEXT_X = 14, TEXT_W = 312, LINE_H = 19;
+  const ANCHOR = CY - RY - 24;
+  const MAX_LINES = 11;
+  const FONT = '13px "DejaVu Sans Mono", monospace';
+
+  // cat-eye lid curve: pointed corners, full center
+  const lidY = (a) => {
+    const s = Math.sin(a);
+    return RY * Math.sign(s) * Math.pow(Math.abs(s), 1.6);
+  };
+
+  let speakUntil = 0;
+  const statuses = new Map();
+
+  // -- phosphor atlas: every glyph pre-rendered in 5 brightness tiers with
+  // baked glow, supersampled 2x — no fillText, no shadowBlur at frame time
+  const TIERS = [
+    // glow values are atlas-device px; the 2x downscale halves them on screen
+    { fill: 'rgba(26,84,56,0.92)', glow: 0, glowColor: null },              // ember
+    { fill: 'rgba(47,158,99,0.95)', glow: 0, glowColor: null },             // dim
+    { fill: '#4dffa0', glow: 8, glowColor: 'rgba(77,255,160,0.85)' },       // lit
+    { fill: '#9fffc8', glow: 12, glowColor: 'rgba(120,255,185,0.9)' },      // bright
+    { fill: '#eafff2', glow: 16, glowColor: 'rgba(190,255,220,0.95)' },     // white-hot lead
+  ];
+  const AS = 2;              // atlas supersample
+  const CELL = 30;           // css px per cell
+  const ORX = 9, ORY = 21;   // glyph baseline origin inside the cell (css px)
+  const atlas = document.createElement('canvas');
+  atlas.width = KATA.length * CELL * AS;
+  atlas.height = TIERS.length * CELL * AS;
+  {
+    const a = atlas.getContext('2d');
+    a.scale(AS, AS); // 13px glyphs render at 26 device px — 2x supersampled
+    a.font = '13px ' + GLYPH_FONT;
+    TIERS.forEach((tier, ti) => {
+      KATA.split('').forEach((ch, ci) => {
+        a.save();
+        a.translate(ci * CELL, ti * CELL);
+        if (ti === TIERS.length - 1) {
+          // chromatic fringe on the white-hot tier only — broadcast bleed
+          a.fillStyle = 'rgba(255,70,90,0.4)';
+          a.fillText(ch, ORX - 0.7, ORY);
+          a.fillStyle = 'rgba(90,150,255,0.4)';
+          a.fillText(ch, ORX + 0.7, ORY);
+        }
+        if (tier.glow) {
+          a.shadowColor = tier.glowColor;
+          a.shadowBlur = tier.glow;
+          a.fillStyle = tier.fill;
+          a.fillText(ch, ORX, ORY); // glow pass
+          a.fillText(ch, ORX, ORY); // reinforce core over its own glow
+        } else {
+          a.fillStyle = tier.fill;
+          a.fillText(ch, ORX, ORY);
+        }
+        a.restore();
+      });
+    });
+  }
+  // blit a glyph so its baseline origin lands exactly where fillText would
+  function blit(ctx, gi, tier, x, y, size) {
+    const k = size / 13;
+    ctx.drawImage(
+      atlas,
+      gi * CELL * AS, tier * CELL * AS, CELL * AS, CELL * AS,
+      x - ORX * k, y - ORY * k, CELL * k, CELL * k
+    );
+  }
+
+  const rim = Array.from({ length: 52 }, (_, i) => ({
+    a: (i / 52) * TAU,
+    v: (Math.random() < 0.5 ? -1 : 1) * (0.05 + Math.random() * 0.12),
+    gi: gidx(),
+    s: 10 + Math.random() * 5,
+    o: 0.5 + Math.random() * 0.38,
+    j: Math.random() * 3 - 1.5,
+    mut: 0,
+  }));
+  // subtle filling: dim glyphs drifting inside the lids
+  const inner = Array.from({ length: 30 }, () => ({
+    u: Math.random() * 2 - 1,            // x fraction
+    f: Math.random() * 1.6 - 0.8,        // y fraction of lid height
+    v: (Math.random() - 0.5) * 0.10,
+    gi: gidx(),
+    o: 0.09 + Math.random() * 0.13,
+    s: 9 + Math.random() * 3,
+    mut: 0,
+  }));
+  const iris = Array.from({ length: 14 }, (_, i) => ({ i, ch: kata() }));
+  // iris filling: faint sparks inside the ring
+  const irisFill = Array.from({ length: 6 }, () => ({
+    a: Math.random() * TAU,
+    r: Math.random() * 0.75,
+    v: (Math.random() - 0.5) * 0.4,
+    ch: kata(),
+    o: 0.12 + Math.random() * 0.14,
+  }));
+  let irisRot = 0;
+  // the slit keeps its glyphs and mutates them, film-style, instead of
+  // rerolling every frame
+  const slit = Array.from({ length: 7 }, () => ({ gi: gidx() }));
+
+  // illumination waves traveling the lid — most dim, ~1 in 5 white-hot
+  function makeWave(pos) {
+    return {
+      pos: pos ?? Math.random() * TAU,
+      speed: 0.35 + Math.random() * 0.35,
+      width: 0.55 + Math.random() * 0.5,
+      hot: Math.random() < 0.2,
+    };
+  }
+  const waves = [makeWave(0), makeWave(Math.PI)];
+  function rimTier(m, now) {
+    let tier = m.o > 0.72 ? 1 : 0;
+    for (const w of waves) {
+      let d = w.pos - m.a;
+      d -= TAU * Math.floor(d / TAU); // how far behind the crest, 0..TAU
+      if (d < 0.16) tier = Math.max(tier, w.hot ? 4 : 3);
+      else if (d < w.width) {
+        const f = 1 - (d - 0.16) / (w.width - 0.16);
+        tier = Math.max(tier, w.hot && f > 0.55 ? 3 : 2);
+      }
+    }
+    return tier;
+  }
+
+  // -- session channel & attention tint --------------------------------------
+  const GREEN = [77, 255, 160];
+  const hexRGB = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  function hueOf([r, gg, b]) {
+    const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b), d = mx - mn;
+    if (!d) return 0;
+    let h;
+    if (mx === r) h = ((gg - b) / d) % 6;
+    else if (mx === gg) h = (b - r) / d + 2;
+    else h = (r - gg) / d + 4;
+    return (h * 60 + 360) % 360;
+  }
+  const GREEN_HUE = hueOf(GREEN);
+  let eyeRGB = [...GREEN];        // lerps toward a calling session's color
+  // the dock: calls on hold + visuals pending on the canvas. front = the
+  // caller first in line — the only one allowed to tint the whole eye
+  let dock = { marks: [], front: null };
+  const markGlyphs = new Map();   // "session:kind" → glyph, stable per mark
+  let sessionTag = { name: 'deep', color: '#b04dff' };
+  // the iris wears the active session's color — that IS the channel indicator
+  let irisRGB = hexRGB(sessionTag.color);
+
+  // eye body renders offscreen, so attention can tint the whole organism with
+  // ONE filtered composite instead of per-glyph recoloring
+  const eyeBuf = document.createElement('canvas');
+  eyeBuf.width = c.width;
+  eyeBuf.height = c.height;
+  const eg = eyeBuf.getContext('2d');
+
+  // phosphor memory: what the eye just was, decaying toward transparency
+  const trailBuf = document.createElement('canvas');
+  trailBuf.width = c.width;
+  trailBuf.height = c.height;
+  const tg = trailBuf.getContext('2d');
+  let wipeCounter = 0; // periodic hard wipe kills 8-bit alpha residue
+
+  // bloom: quarter-res view of the eye region, blurred and added back — the
+  // buffer is smaller than the eye's neighborhood, so glow physically cannot
+  // reach the window bounds (the old edge-reveal bug's territory)
+  const BLOOM = { x: CX - RX - 20, y: CY - RY - 20, w: (RX + 20) * 2, h: (RY + 20) * 2 };
+  const bloomBuf = document.createElement('canvas');
+  bloomBuf.width = Math.round(BLOOM.w / 4);
+  bloomBuf.height = Math.round(BLOOM.h / 4);
+  const bg = bloomBuf.getContext('2d');
+
+  // cheap 1/f-ish noise: two incommensurate sines, never metronomes
+  const noise1 = (x) => Math.sin(x + 1.7 * Math.sin(x * 0.213)) * 0.6 + Math.sin(x * 0.607 + 2.1) * 0.4;
+  // gaze: micro-saccades — jump to a fixation, snap in, hold with tremor
+  const gaze = { x: 0, y: 0, tx: 0, ty: 0, next: 0 };
+  // excitement eases between idle / listening / speaking (no hard switches)
+  let exc = 0;
+
+  // -- decode caption --------------------------------------------------------
+  let caption = null;
+  function layoutCaption(text) {
+    g.font = FONT;
+    const words = text.split(/\s+/);
+    const lines = [];
+    let cur = '';
+    for (const w of words) {
+      const probe = cur ? cur + ' ' + w : w;
+      if (g.measureText(probe).width > TEXT_W && cur) { lines.push(cur); cur = w; }
+      else cur = probe;
+    }
+    if (cur) lines.push(cur);
+    const chars = [];
+    const now = performance.now();
+    let k = 0;
+    const CPS = 38;
+    lines.forEach((ln, li) => {
+      let x = TEXT_X;
+      for (const ch of ln) {
+        chars.push({ ch, x, line: li, resolveAt: now + (k / CPS) * 1000, noise: kata() });
+        x += g.measureText(ch).width;
+        if (ch !== ' ') k++;
+      }
+    });
+    const revealMs = (k / CPS) * 1000;
+    const lingerMs = Math.min(Math.max(7000, k * 45), 22000);
+    caption = { chars, lines: lines.length, doneAt: now + revealMs, fadeAt: now + revealMs + lingerMs };
+    speakUntil = Date.now() + revealMs + 1200;
+  }
+
+  function drawCaption(now) {
+    if (!caption) return;
+    const fadeK = now > caption.fadeAt ? Math.min((now - caption.fadeAt) / 1600, 1) : 0;
+    if (fadeK >= 1) { caption = null; return; }
+    const alpha = 1 - fadeK;
+
+    const lastLine = caption.chars.reduce(
+      (m, ch) => (ch.resolveAt <= now && ch.line > m ? ch.line : m), 0);
+    const visCount = Math.min(caption.lines, MAX_LINES);
+    const scroll = Math.max(0, Math.min(lastLine, caption.lines - 1) - (MAX_LINES - 1));
+    const yFor = (line) => ANCHOR - (visCount - 1 - line) * LINE_H;
+
+    const topY = yFor(0) - 15, botY = yFor(visCount - 1) + 7;
+    g.save();
+    g.filter = 'blur(12px)';
+    g.fillStyle = 'rgba(1,4,3,' + 0.86 * alpha + ')';
+    g.fillRect(TEXT_X - 10, topY, TEXT_W + 20, botY - topY);
+    g.restore();
+
+    g.font = FONT;
+    for (const ch of caption.chars) {
+      const line = ch.line - scroll;
+      if (line < 0 || line >= MAX_LINES || ch.ch === ' ') continue;
+      const y = yFor(line);
+      const resolved = now >= ch.resolveAt;
+      if (!resolved) {
+        if (ch.resolveAt - now < 900) {
+          if (Math.random() < 0.25) ch.noise = kata();
+          g.font = '13px ' + GLYPH_FONT;
+          g.fillStyle = 'rgba(77,255,160,' + 0.34 * alpha + ')';
+          g.fillText(ch.noise, ch.x, y);
+          g.font = FONT;
+        }
+      } else {
+        const justNow = now - ch.resolveAt < 160;
+        g.fillStyle = justNow
+          ? 'rgba(234,255,242,' + alpha + ')'
+          : 'rgba(159,255,200,' + 0.95 * alpha + ')';
+        g.fillText(ch.ch, ch.x, y);
+      }
+    }
+  }
+
+  // -- the eye ---------------------------------------------------------------
+  function leafPath(ctx) {
+    ctx.beginPath();
+    ctx.moveTo(CX - RX, CY);
+    for (let i = 1; i <= 40; i++) {
+      const a = (i / 40) * Math.PI;
+      ctx.lineTo(CX - Math.cos(a) * RX, CY - lidY(a));
+    }
+    for (let i = 1; i <= 40; i++) {
+      const a = Math.PI + (i / 40) * Math.PI;
+      ctx.lineTo(CX - Math.cos(a) * RX, CY - lidY(a));
+    }
+    ctx.closePath();
+  }
+
+  // idle throttle: the Eye is on 24/7, so a still eye must be cheap. S is how
+  // many 1/60 s steps one drawn frame advances, so motion keeps its speed and
+  // its look at any frame rate.
+  const IDLE_FPS = 8;
+  let S = 1;
+  let lastPaint = 0;
+  const busy = () =>
+    Date.now() < speakUntil || listening || caption || heard ||
+    statuses.size > 0 || dock.marks.length > 0 || dock.front || exc > 0.01;
+
+  let t = 0;
+  // ?stats=1 (DARK_EYE_STATS=1 on the body): frame rate and cost, every 5 s
+  const STATS = location.search.includes('stats=1');
+  // ?audio=pw (DARK_EYE_AUDIO=pw): main plays and records through pw-cat, and
+  // says how long the eye speaks — this page must not open a device of its own
+  const AUDIO_PW = location.search.includes('audio=pw');
+  let sN = 0, sMs = 0, sMax = 0, sT0 = 0;
+  // one animation frame at a time: full rate while something is happening,
+  // IDLE_FPS otherwise — asking for the next frame late is what makes it cheap.
+  const schedule = () =>
+    busy() ? requestAnimationFrame(frame) : setTimeout(() => requestAnimationFrame(frame), 1000 / IDLE_FPS);
+
+  function frame(now) {
+    S = lastPaint ? Math.min(8, Math.max(1, (now - lastPaint) * 0.06)) : 1;
+    lastPaint = now;
+    t += S / 60;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, 340, 380);
+    const speaking = Date.now() < speakUntil;
+    exc += ((speaking ? 1 : listening ? 0.55 : 0) - exc) * Math.min(1, 0.04 * S); // ~400ms ease
+    const pulse = 1 + Math.sin(t * (1.1 + 5 * exc)) * (0.025 + 0.028 * exc);
+    // the whole eye breathes in luminance, slow and slightly irregular
+    const breathe = 1 - 0.09 * (0.5 + 0.5 * noise1(t * 0.63));
+    // saccade: new fixation point every 1-4s, snappy ease-out, then tremor
+    if (t > gaze.next) {
+      gaze.tx = Math.random() * 6 - 3;
+      gaze.ty = Math.random() * 4 - 2;
+      gaze.next = t + 1 + Math.random() * 3;
+    }
+    const gk = Math.min(1, 0.22 * S);
+    gaze.x += (gaze.tx - gaze.x) * gk;
+    gaze.y += (gaze.ty - gaze.y) * gk;
+    const gx = gaze.x + noise1(t * 2.3) * 0.15;
+    const gy = gaze.y + noise1(t * 2.9 + 5) * 0.12;
+
+    // attention: the whole eye leans toward the FRONT caller's color; the
+    // rest of the queue waits as docked marks, stealing nothing
+    const att = dock.front;
+    const tgtRGB = att ? hexRGB(att.color) : GREEN;
+    for (let i = 0; i < 3; i++) eyeRGB[i] += (tgtRGB[i] - eyeRGB[i]) * 0.05;
+    const attPulse = att ? 0.72 + 0.28 * Math.sin(t * 3.4) : 1;
+    const eyeCol = (a) => 'rgba(' + (eyeRGB[0] | 0) + ',' + (eyeRGB[1] | 0) + ',' + (eyeRGB[2] | 0) + ',' + a * attPulse + ')';
+    const mix = (k) => eyeRGB.map((v) => v + (255 - v) * k);
+    const mid = mix(0.35);
+    const midCol = (a) => 'rgba(' + (mid[0] | 0) + ',' + (mid[1] | 0) + ',' + (mid[2] | 0) + ',' + a * attPulse + ')';
+    // the iris eases toward the active session's color on switch
+    const irisT = hexRGB(sessionTag.color);
+    for (let i = 0; i < 3; i++) irisRGB[i] += (irisT[i] - irisRGB[i]) * Math.min(1, 0.05 * S);
+    const irisCol = (a) => 'rgba(' + (irisRGB[0] | 0) + ',' + (irisRGB[1] | 0) + ',' + (irisRGB[2] | 0) + ',' + a + ')';
+
+    // ---- eye body → offscreen buffer (green phosphor, tinted on composite)
+    eg.setTransform(dpr, 0, 0, dpr, 0, 0);
+    eg.clearRect(0, 0, 340, 380);
+
+    // waves ride the lid; respawn with fresh character each lap
+    for (const w of waves) {
+      w.pos += w.speed * (S / 60) * (1 + 1.5 * exc) * (1 + 0.25 * noise1(t * 0.5));
+      if (w.pos > TAU) {
+        const next = makeWave(w.pos - TAU);
+        w.speed = next.speed; w.width = next.width; w.hot = next.hot;
+        w.pos -= TAU;
+      }
+    }
+
+    // mutation stays rare — he called the flicker "tickling", annoying
+    const mutP = (0.003 + 0.005 * exc) * S;
+
+    // filling: dim glyphs adrift inside the lids
+    eg.save();
+    leafPath(eg);
+    eg.clip();
+    for (const m of inner) {
+      m.u += m.v * (S / 60);
+      if (m.u > 1) m.u = -1; else if (m.u < -1) m.u = 1;
+      if (Math.random() < 0.002 * S) m.gi = gidx();
+      const lid = RY * Math.pow(Math.max(1 - m.u * m.u, 0), 0.9);
+      const x = CX + m.u * RX;
+      const y = CY + m.f * lid * 0.8;
+      const tier = m.o > 0.16 ? 1 : 0;
+      eg.globalAlpha = Math.min(1, m.o * 1.5); // barely-there, as before the pass
+      blit(eg, m.gi, tier, x, y, m.s);
+    }
+    eg.restore();
+    eg.globalAlpha = 1;
+
+    // rim — glyphs flowing along the lid lines, lit by traveling waves
+    for (const m of rim) {
+      m.a += m.v * (S / 60) * (1 + exc);
+      if (Math.random() < mutP) { m.gi = gidx(); m.mut = now; }
+      const x = CX + Math.cos(m.a) * RX * pulse;
+      const y = CY + lidY(m.a) * pulse + m.j;
+      const tier = rimTier(m, now);
+      eg.globalAlpha = tier >= 2 ? 1 : m.o;
+      blit(eg, m.gi, tier, x, y, m.s);
+    }
+    eg.globalAlpha = 1;
+
+    // the slit — tall, vertical, feline, the hottest thing in the eye
+    const slitPulse = 0.75 + 0.25 * Math.sin(t * (1.1 + 4 * exc));
+    for (let j = -3; j <= 3; j++) {
+      const cell = slit[j + 3];
+      if (Math.random() < 0.03 * S) cell.gi = gidx();
+      const tier = j === 0 && exc > 0.5 ? 4 : Math.abs(j) === 3 ? 2 : 3;
+      eg.globalAlpha = slitPulse * (Math.abs(j) === 3 ? 0.5 : 1);
+      blit(eg, cell.gi, tier, CX - 4 + gx, CY + j * 11 + gy, 13);
+    }
+    eg.globalAlpha = 1;
+
+    // ---- composite the body; attention tints the whole organism at once
+    // phosphor memory: decay, then feed this frame's light into it
+    tg.setTransform(1, 0, 0, 1, 0, 0);
+    tg.globalCompositeOperation = 'destination-out';
+    const wipeEvery = Math.max(1, Math.round(45 / S));
+    tg.fillStyle = 'rgba(0,0,0,' + (++wipeCounter % wipeEvery === 0 ? 0.4 : 1 - Math.pow(0.84, S)) + ')';
+    tg.fillRect(0, 0, trailBuf.width, trailBuf.height);
+    tg.globalCompositeOperation = 'source-over';
+    tg.globalAlpha = 0.45;
+    tg.drawImage(eyeBuf, 0, 0);
+    tg.globalAlpha = 1;
+
+    g.save();
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    if (att) {
+      g.filter = 'hue-rotate(' + Math.round(hueOf(hexRGB(att.color)) - GREEN_HUE) + 'deg) saturate(1.15)';
+    }
+    const bodyAlpha = (att ? attPulse : 1) * breathe;
+    g.globalAlpha = bodyAlpha * 0.55; // the ghost underneath
+    g.drawImage(trailBuf, 0, 0);
+    g.globalAlpha = bodyAlpha; // the crisp present
+    g.drawImage(eyeBuf, 0, 0);
+    g.restore();
+
+    // bloom: downscale the eye, blur, add back — haze that hugs the glyphs
+    bg.clearRect(0, 0, bloomBuf.width, bloomBuf.height);
+    bg.filter = 'blur(1.2px)';
+    bg.drawImage(
+      eyeBuf,
+      BLOOM.x * dpr, BLOOM.y * dpr, BLOOM.w * dpr, BLOOM.h * dpr,
+      0, 0, bloomBuf.width, bloomBuf.height
+    );
+    bg.filter = 'none';
+    g.save();
+    if (att) g.filter = 'hue-rotate(' + Math.round(hueOf(hexRGB(att.color)) - GREEN_HUE) + 'deg) saturate(1.15)';
+    g.globalCompositeOperation = 'lighter';
+    g.globalAlpha = 0.3 * bodyAlpha;
+    g.drawImage(bloomBuf, BLOOM.x, BLOOM.y, BLOOM.w, BLOOM.h);
+    g.restore();
+
+    // scanlines: faint row shading living only inside the eye — CRT whisper
+    g.save();
+    leafPath(g);
+    g.clip();
+    g.globalCompositeOperation = 'destination-out';
+    g.fillStyle = 'rgba(0,0,0,0.10)';
+    for (let sy = CY - RY; sy < CY + RY; sy += 3) g.fillRect(CX - RX, sy, RX * 2, 1);
+    g.restore();
+
+    // iris — session-colored, slowly turning (few glyphs: direct text is fine)
+    irisRot += (S / 60) * (0.22 + 0.7 * exc);
+    const IRIS_RX = 21, IRIS_RY = 34;
+    for (const p of irisFill) {
+      p.a += p.v * (S / 60);
+      if (Math.random() < 0.004 * S) p.ch = kata();
+      const x = CX + gx + Math.cos(p.a) * IRIS_RX * p.r;
+      const y = CY + gy + Math.sin(p.a) * IRIS_RY * p.r;
+      g.font = '10px ' + GLYPH_FONT;
+      g.fillStyle = irisCol(p.o);
+      g.fillText(p.ch, x, y);
+    }
+    for (const p of iris) {
+      if (Math.random() < 0.005 * S) p.ch = kata();
+      const a = irisRot + (p.i / 14) * TAU;
+      const x = CX + gx + Math.cos(a) * IRIS_RX;
+      const y = CY + gy + Math.sin(a) * IRIS_RY;
+      g.font = '12px ' + GLYPH_FONT;
+      g.fillStyle = irisCol(0.62 + (speaking ? 0.2 : 0));
+      g.fillText(p.ch, x, y);
+    }
+
+    // agents: colored glyphs orbiting OUTSIDE the eye — never green, green is me
+    let oi = 0;
+    for (const [, s] of statuses) {
+      const orx = RX + 16 + (oi % 2) * 10;
+      const ory = RY + 20 + (oi % 2) * 8;
+      const ang = t * (0.9 + (oi % 3) * 0.25) + s.phase;
+      const x = CX + Math.cos(ang) * orx;
+      const y = CY + Math.sin(ang) * ory;
+      if (s.state === 'working') {
+        for (let k = 1; k <= 3; k++) {
+          const a2 = ang - k * 0.13;
+          g.font = '10px ' + GLYPH_FONT;
+          g.fillStyle = s.color + Math.round(140 - k * 40).toString(16).padStart(2, '0');
+          g.fillText(s.tail[k - 1], CX + Math.cos(a2) * orx, CY + Math.sin(a2) * ory);
+        }
+        if (Math.random() < 0.02 * S) s.ch = kata();
+        g.font = '13px ' + GLYPH_FONT;
+        g.fillStyle = s.color;
+        g.fillText(s.ch, x, y);
+      } else if (s.state === 'done') {
+        const k = Math.min((Date.now() - s.doneAt) / 1200, 1);
+        g.font = Math.round(13 + k * 10) + 'px ' + GLYPH_FONT;
+        g.fillStyle = 'rgba(255,209,102,' + (0.9 * (1 - k)) + ')';
+        g.fillText(s.ch, x, y);
+      } else if (s.state === 'error') {
+        g.font = '13px ' + GLYPH_FONT;
+        g.fillStyle = Math.random() < 0.6 ? '#ff3b4d' : '#7a1020';
+        g.fillText(s.ch, x, y);
+      }
+      oi++;
+    }
+
+    // the dock: held calls (bare glyph, slow pulse) and pending visuals
+    // (glyph in a thin card frame) stacked on the left, out of the eye's way.
+    // Marks are the eye's ONE clickable spot: click a show to open the
+    // canvas, click a call to answer it.
+    markRects.length = 0;
+    // the chat button — the Eye's own furniture, permanently docked at the
+    // bottom slot: green (it belongs to the Eye, not an agent), dim until
+    // hovered, click toggles the canvas/chat. Pending marks stack above it.
+    // the chat sigil — ONE bare glyph at the eye's bottom right, bigger (his
+    // spec; this bare-sigil style is the pattern for future function marks).
+    // No frame, no backing. Dim at rest, revealed near the eye, ignited on
+    // hover. The hitbox is generous so the click-capture arms on approach —
+    // the two-clicks bug was the hover IPC racing his click.
+    {
+      markRects.push({ x: 288, y: 326, w: 52, h: 54, kind: 'chat', session: 'eye', key: 'eye:chat' });
+      const hovered = hoverKey === 'eye:chat';
+      const reveal = hovered || t - eyeHoverT < 0.5; // near the eye = shown
+      if (Math.random() < 0.003 * S) chatSigil[0] = gidx();
+      const shimmer = 0.7 + 0.3 * Math.sin(t * 1.1);
+      const tier = hovered ? 4 : reveal ? 2 : 1;
+      g.globalAlpha = hovered ? 1 : reveal ? 0.85 : 0.5 * shimmer;
+      blit(g, chatSigil[0], tier, 312, 356, hovered ? 22 : 20);
+      g.globalAlpha = 1;
+    }
+    dock.marks.slice(0, 8).forEach((m, i) => {
+      const key = m.session + ':' + m.kind;
+      if (!markGlyphs.has(key)) markGlyphs.set(key, kata());
+      if (Math.random() < 0.004 * S) markGlyphs.set(key, kata());
+      // his spec: clearly visible — a real square badge, glyph inside
+      const S = 28, bx = 12, by = CY + 22 - (i + 1) * (S + 8) - S;
+      markRects.push({ x: bx, y: by, w: S, h: S, kind: m.kind, session: m.session, key });
+      const hovered = hoverKey === key;
+      const [mr, mg, mb] = hexRGB(m.color || '#9db4ff');
+      const a = hovered ? 1 : 0.6 + 0.28 * Math.sin(t * 1.8 + i * 1.3);
+      const col = (k) => 'rgba(' + mr + ',' + mg + ',' + mb + ',' + k + ')';
+      g.fillStyle = 'rgba(3,10,6,' + 0.75 * a + ')';
+      g.fillRect(bx, by, S, S);
+      g.strokeStyle = col(a);
+      g.lineWidth = hovered ? 2 : m.kind === 'show' ? 1.5 : 1;
+      g.strokeRect(bx + 0.5, by + 0.5, S - 1, S - 1);
+      if (m.kind === 'show') {
+        // double frame marks a visual waiting on the canvas
+        g.lineWidth = 1;
+        g.strokeStyle = col(a * 0.55);
+        g.strokeRect(bx + 3.5, by + 3.5, S - 7, S - 7);
+      }
+      g.font = '16px ' + GLYPH_FONT;
+      g.fillStyle = col(Math.min(1, a + 0.15));
+      g.fillText(markGlyphs.get(key), bx + S / 2 - 8, by + S / 2 + 6);
+    });
+
+    // listening: quiet expanding rings — the Eye leans in
+    if (listening) {
+      const k = (t % 1.1) / 1.1;
+      g.strokeStyle = midCol(0.5 * (1 - k));
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.ellipse(CX, CY, (RX + 6) * (1 + k * 0.15), (RY + 12) * (1 + k * 0.4), 0, 0, TAU);
+      g.stroke();
+    }
+    // speaking: the same ripple, but in the session's color — the voice made
+    // visible (offset phase so it interleaves if both ever show at once)
+    if (speaking) {
+      const k = ((t + 0.55) % 1.1) / 1.1;
+      g.strokeStyle = irisCol(0.45 * (1 - k));
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.ellipse(CX, CY, (RX + 6) * (1 + k * 0.15), (RY + 12) * (1 + k * 0.4), 0, 0, TAU);
+      g.stroke();
+    }
+    // what it heard, gold, brief
+    if (heard) {
+      if (Date.now() > heard.until) heard = null;
+      else {
+        g.font = '12px "DejaVu Sans Mono", monospace';
+        const s = '» ' + heard.text;
+        const w = g.measureText(s).width;
+        g.fillStyle = 'rgba(255,209,102,0.78)';
+        g.fillText(s, Math.min(Math.max(TEXT_X, CX - w / 2), 340 - w - 8), CY - RY - 10);
+      }
+    }
+
+    // why a session is calling — only when no caption owns that space
+    if (att && att.label && !caption) {
+      g.font = '11px "DejaVu Sans Mono", monospace';
+      const aw = g.measureText(att.label).width;
+      g.fillStyle = eyeCol(0.8);
+      g.fillText(att.label, CX - aw / 2, CY - RY - 34);
+    }
+
+    drawCaption(now);
+    if (STATS) {
+      const ms = performance.now() - now, el = now - (sT0 ||= now);
+      sN++; sMs += ms; if (ms > sMax) sMax = ms;
+      if (el >= 5000) { window.eye.debug(`fps=${(sN / el * 1000).toFixed(1)} ms=${(sMs / sN).toFixed(1)}/${sMax.toFixed(1)}`); sN = sMs = sMax = 0; sT0 = now; }
+    }
+    schedule();
+  }
+
+  window.eye.onSpeak((text) => layoutCaption(text));
+  // one distinct color per agent — rainbow, never green (green is the Eye)
+  const AGENT_COLORS = ['#4dd9ff', '#ff4dd9', '#ff9a4d', '#b04dff', '#ffe14d', '#ff4d88'];
+  let nextColor = 0;
+  window.eye.onStatus((s) => {
+    const prev = statuses.get(s.id);
+    statuses.set(s.id, {
+      ...s,
+      color: prev?.color ?? AGENT_COLORS[nextColor++ % AGENT_COLORS.length],
+      phase: prev?.phase ?? Math.random() * TAU,
+      ch: prev?.ch ?? kata(),
+      tail: prev?.tail ?? [kata(), kata(), kata()],
+      doneAt: s.state === 'done' ? Date.now() : prev?.doneAt,
+    });
+    if (s.state !== 'working') setTimeout(() => statuses.delete(s.id), 1600);
+  });
+
+  // -- the ears: push-to-talk mic capture ------------------------------------
+  let listening = false;
+  let cap = null;
+  async function startCapture() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      });
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      const srcN = ctx.createMediaStreamSource(stream);
+      const proc = ctx.createScriptProcessor(4096, 1, 1);
+      const mute = ctx.createGain();
+      mute.gain.value = 0; // never echo the mic to the speakers
+      const bufs = [];
+      proc.onaudioprocess = (ev) => bufs.push(new Float32Array(ev.inputBuffer.getChannelData(0)));
+      srcN.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+      cap = { stream, ctx, proc, bufs };
+    } catch (err) {
+      window.eye.debug('MIC FAIL: ' + err.message);
+    }
+  }
+  function stopCapture() {
+    if (!cap) return;
+    const { stream, ctx, proc, bufs } = cap;
+    cap = null;
+    proc.disconnect();
+    stream.getTracks().forEach((t) => t.stop());
+    ctx.close();
+    const n = bufs.reduce((s, b) => s + b.length, 0);
+    const all = new Float32Array(n);
+    let o = 0;
+    for (const b of bufs) { all.set(b, o); o += b.length; }
+    window.eye.debug('mic captured ' + (n / 16000).toFixed(1) + 's');
+    window.eye.sendMic({ samples: all, sampleRate: 16000 });
+  }
+  window.eye.onPtt((down) => {
+    listening = down;
+    if (AUDIO_PW) return;
+    if (down) startCapture();
+    else stopCapture();
+  });
+
+  // what he said, echoed briefly in gold above the eye
+  let heard = null;
+  window.eye.onHeard((text) => { heard = { text, until: Date.now() + 4500 }; });
+
+  // the window is click-through; while the cursor sits on a dock mark we ask
+  // main to let clicks land (mousemove keeps arriving thanks to forward:true)
+  const markRects = [];
+  const chatSigil = [gidx(), gidx(), gidx()];
+  let hoverKey = null;
+  // hovering anywhere over the eye reveals the chat sigil (his ask — the
+  // bare sigil alone is too hidden). A click-through surface gets no reliable
+  // mouseleave, so the reveal decays when mousemove goes quiet.
+  let eyeHoverT = -10;
+  let captureOn = false;
+  const setCapture = (on) => {
+    if (on === captureOn) return;
+    captureOn = on;
+    window.eye.dockHover(on);
+  };
+  const hitMark = (ev) =>
+    markRects.find((r) => ev.clientX >= r.x && ev.clientX <= r.x + r.w &&
+                          ev.clientY >= r.y && ev.clientY <= r.y + r.h) || null;
+  window.addEventListener('mousemove', (ev) => {
+    // clicks arm over the whole reveal zone, not just the tiny targets —
+    // arming on target-entry raced his click (the first-click bug)
+    const inZone = ev.clientX > CX - RX - 30 && ev.clientY > CY - RY - 34;
+    // the dock marks stack at the LEFT edge, outside the eye zone — capture
+    // must arm near them too or clicks fall through the window (his bug:
+    // "can't open the canvas from the notification"). Generous 12px halo so
+    // arming beats the click, same law as the zone.
+    const nearMark = markRects.some((r) =>
+      ev.clientX >= r.x - 12 && ev.clientX <= r.x + r.w + 12 &&
+      ev.clientY >= r.y - 12 && ev.clientY <= r.y + r.h + 12);
+    if (inZone) eyeHoverT = t;
+    setCapture(inZone || nearMark);
+    const hit = hitMark(ev);
+    const key = hit ? hit.key : null;
+    if (key !== hoverKey) {
+      hoverKey = key;
+      c.style.cursor = key ? 'pointer' : 'default';
+    }
+  });
+  // the double-click ghost: a 'click' only synthesizes if mousedown AND
+  // mouseup both survive — a capture flip in between kills it. Act on the
+  // mousedown itself, so the first press counts. (No 'click' listener —
+  // both firing would toggle the canvas open-then-shut.)
+  window.addEventListener('mousedown', (ev) => {
+    const hit = hitMark(ev);
+    window.eye.debug('mousedown b=' + ev.button + ' capture=' + captureOn + ' hit=' + (hit ? hit.key : 'none'));
+    if (ev.button === 0 && hit) window.eye.dockClick({ kind: hit.kind, session: hit.session });
+  });
+  // while captured the window is a normal one, so leave events are reliable —
+  // a timer here would release capture under a resting cursor mid-click
+  document.addEventListener('mouseleave', () => {
+    setCapture(false);
+    hoverKey = null;
+    c.style.cursor = 'default';
+  });
+
+  window.eye.onSession((s) => { sessionTag = { name: s.active, color: s.color }; });
+  window.eye.onDock((d) => {
+    dock = d;
+    // forget glyphs of marks that left, so a returning mark rerolls fresh
+    const live = new Set(d.marks.map((m) => m.session + ':' + m.kind));
+    for (const k of markGlyphs.keys()) if (!live.has(k)) markGlyphs.delete(k);
+  });
+
+  // -- the voice: gapless playback of streamed sentence chunks ---------------
+  let actx = null, playT = 0, idleTimer = null;
+  window.eye.onAudio(({ samples, sampleRate }) => {
+    try {
+      actx ??= new AudioContext();
+      if (actx.state === 'suspended') actx.resume();
+      const data = samples instanceof Float32Array ? samples : new Float32Array(samples);
+      const buf = actx.createBuffer(1, data.length, sampleRate);
+      buf.getChannelData(0).set(data);
+      const src = actx.createBufferSource();
+      src.buffer = buf;
+      src.connect(actx.destination);
+      const at = Math.max(actx.currentTime + 0.06, playT);
+      src.start(at);
+      playT = at + buf.duration;
+      // nothing newer scheduled half a second after the last chunk ends: let the
+      // context — and with it the PipeWire stream — go idle until the next one
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { if (actx.state === 'running') actx.suspend(); },
+        (playT - actx.currentTime + 0.5) * 1000);
+      // the eye speaks exactly as long as the audio lasts
+      speakUntil = Math.max(speakUntil, Date.now() + (playT - actx.currentTime) * 1000);
+      window.eye.debug(`play n=${data.length} rate=${sampleRate} state=${actx.state} until=${playT.toFixed(2)}`);
+    } catch (err) {
+      window.eye.debug(`AUDIO FAIL: ${err.message}`);
+    }
+  });
+
+  // main's own mouth (pw-cat): how many ms of speech are still to play
+  window.eye.onSpeaking((ms) => { speakUntil = Math.max(speakUntil, Date.now() + ms); });
+
+  // start the render loop only after every piece of state above exists
+  requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+[Unit]
+Description=The Dark Eye — push the owner when the body gives up starting
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/agents/bin:/usr/local/bin:/usr/bin:/bin
+# OnFailure= fires on every failed start; only the last one leaves the unit
+# in `failed` (the restarts in between are `activating`), so only that pushes.
+ExecStart=/bin/bash -c 'systemctl --user is-active dark-eye | grep -qx failed || exit 0; exec %h/agents/bin/notify-owner -p high -t dark-eye "dark-eye body failed to start: journalctl --user -u dark-eye -n 50"'

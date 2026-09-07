@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>The Dark Eye</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23030604'/%3E%3Cellipse cx='16' cy='16' rx='13' ry='6' fill='none' stroke='%234dffa0' stroke-width='1.5'/%3E%3Cellipse cx='16' cy='16' rx='3' ry='5' fill='%23b04dff'/%3E%3C/svg%3E">
+<style>
+  /* the TV's own palette: phosphor green is the Eye, gold is him, violet is the iris */
+  :root {
+    --ground: #030604;
+    --green: #4dffa0;
+    --lit: #9fffc8;
+    --hot: #eafff2;
+    --dim: #2f9e63;
+    --ember: rgba(77, 255, 160, 0.34);
+    --gold: #ffd166;
+    --gold-hot: #fff2cd;
+    --gold-ember: rgba(255, 209, 102, 0.34);
+    --violet: #b04dff;
+    --edge: rgba(77, 255, 160, 0.22);
+    --mono: ui-monospace, "SF Mono", "DejaVu Sans Mono", "Cascadia Mono", Menlo, monospace;
+    --kana: "Noto Sans Mono CJK JP", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { height: 100%; }
+  body {
+    margin: 0;
+    min-height: 100%;
+    background:
+      radial-gradient(90% 50% at 50% 100%, rgba(77, 255, 160, 0.06), transparent 70%),
+      radial-gradient(140% 100% at 50% 40%, transparent 55%, rgba(0, 0, 0, 0.55) 100%),
+      var(--ground);
+    color: var(--lit);
+    font: 15px/1.65 var(--mono);
+    -webkit-text-size-adjust: 100%;
+  }
+  main {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) auto;
+    width: min(100%, 560px);
+    margin: 0 auto;
+    padding: max(14px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+    height: 100vh;
+    height: 100dvh;
+  }
+  :focus-visible { outline: 1px solid var(--lit); outline-offset: 4px; }
+
+  /* -- the key, pasted once and never kept ---------------------------------- */
+  #gate { display: grid; align-content: end; justify-items: center; gap: 14px; padding-bottom: 28px; text-align: center; }
+  #gate p { margin: 0; color: var(--dim); font-size: 13px; letter-spacing: 0.04em; }
+  #gate form { display: flex; gap: 8px; width: min(100%, 320px); }
+  #refused { min-height: 1.5em; color: var(--gold); font-size: 13px; }
+  input {
+    flex: 1; min-width: 0;
+    padding: 11px 14px;
+    background: rgba(77, 255, 160, 0.04);
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+    color: var(--lit);
+    font: inherit;
+    letter-spacing: 0.14em;
+  }
+  input:focus { outline: none; border-color: rgba(77, 255, 160, 0.6); }
+  button.plain {
+    padding: 11px 16px;
+    background: transparent;
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+    color: var(--green);
+    font: inherit;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+  }
+  button.plain:hover { border-color: rgba(77, 255, 160, 0.6); }
+
+  /* -- what was said: his lines gold, the Eye's green, both decoding out of noise */
+  #log {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+    padding: 4px 2px 18px;
+    scrollbar-width: none;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, #000 36px);
+    mask-image: linear-gradient(to bottom, transparent, #000 36px);
+  }
+  #log::before { content: ""; margin-top: auto; } /* newest at the bottom, breathing just above the eye */
+  .line { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; letter-spacing: 0.02em; }
+  .line:not(:nth-last-child(-n+2)) { opacity: 0.5; }
+  .line.me { color: var(--gold); text-shadow: 0 0 12px rgba(255, 209, 102, 0.22); }
+  .line.eye { color: var(--lit); text-shadow: 0 0 12px rgba(77, 255, 160, 0.22); }
+  .line .h { color: var(--hot); }
+  .line.me .h { color: var(--gold-hot); }
+  .line .n { color: var(--ember); font-family: var(--kana); text-shadow: none; }
+  .line.me .n { color: var(--gold-ember); }
+  .line button {
+    display: inline-block; margin: 8px 0 0; padding: 3px 12px;
+    background: transparent; border: 1px solid var(--edge); border-radius: 3px;
+    color: var(--green); font: inherit; font-size: 12px; cursor: pointer;
+  }
+
+  /* -- the eye: the TV's, tapped on and tapped off ---------------------------- */
+  #talk { display: grid; justify-items: center; gap: 2px; }
+  #disc {
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
+    width: min(100%, 380px);
+    aspect-ratio: 260 / 190;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    cursor: pointer;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: opacity 0.4s ease;
+  }
+  #disc:active canvas { transform: scale(0.985); }
+  #disc canvas { display: block; width: 100%; height: 100%; transform-origin: 50% 80%; }
+  #disc[data-state="offline"] { opacity: 0.35; cursor: default; }
+  #status {
+    max-width: 100%;
+    min-height: 1.5em;
+    font-size: 12.5px;
+    letter-spacing: 0.04em;
+    color: var(--dim);
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  #status.warn { color: var(--gold); }
+  kbd { font: inherit; padding: 0 5px; border: 1px solid var(--edge); border-radius: 3px; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <section id="gate" class="hide">
+    <p>Paste the key once · it is never kept</p>
+    <form id="keyform">
+      <input id="key" type="password" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="key" aria-label="key">
+      <button class="plain" type="submit">enter</button>
+    </form>
+    <div id="refused" aria-live="polite"></div>
+  </section>
+
+  <section id="log" class="hide" aria-live="polite"></section>
+
+  <section id="talk">
+    <button id="disc" data-state="locked" aria-label="tap to talk, tap again to send" aria-pressed="false" disabled>
+      <canvas id="eye" aria-hidden="true"></canvas>
+    </button>
+    <div id="status" aria-live="polite"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const gate = $("gate"), log = $("log"), talk = $("talk"), disc = $("disc"), statusEl = $("status");
+const DESK = matchMedia("(hover: hover) and (pointer: fine)").matches;
+const STILL = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const READY = DESK ? "Tap or <kbd>space</kbd> to talk" : "Tap to talk";
+const MIN_SAMPLES = 3200; // 200 ms — a slip of the thumb is not a sentence
+const MAX_MS = 90_000; // the same failsafe the body puts on its own mic
+const FLUSH_MS = 1000; // a second of his voice per upload while he talks
+const TAU = Math.PI * 2;
+const IDLE_FPS = 60; // the idle eye lives at the TV's own rate: breathe, drift, saccades, trail
+
+// -- the eye, as the TV draws it: spec/eye-reference.html, the same numbers ---
+const KATA = "ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎ0123456789";
+const KANA_FONT = getComputedStyle(document.documentElement).getPropertyValue("--kana");
+const gidx = () => (Math.random() * KATA.length) | 0;
+const kata = () => KATA[gidx()];
+const CX = 170, CY = 316, RX = 92, RY = 42, IRIS_RX = 21, IRIS_RY = 34;
+const VIEW = { x: 40, y: 190, w: 260, h: 190 }; // the eye's own neighbourhood of the TV window
+const BODY = { x: 30, y: 216, w: 280, h: 164 }; // everything the eye body touches
+const BLOOM = { x: CX - RX - 20, y: CY - RY - 20, w: (RX + 20) * 2, h: (RY + 20) * 2 };
+const lidY = (a) => { const s = Math.sin(a); return RY * Math.sign(s) * Math.pow(Math.abs(s), 1.6); };
+const noise1 = (x) => Math.sin(x + 1.7 * Math.sin(x * 0.213)) * 0.6 + Math.sin(x * 0.607 + 2.1) * 0.4;
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+/** Five brightness tiers with baked glow, one atlas per voice: the Eye's green, his gold. */
+const GREEN_TIERS = [
+  { fill: "rgba(26,84,56,0.92)" }, { fill: "rgba(47,158,99,0.95)" },
+  { fill: "#4dffa0", glow: 8, glowColor: "rgba(77,255,160,0.85)" },
+  { fill: "#9fffc8", glow: 12, glowColor: "rgba(120,255,185,0.9)" },
+  { fill: "#eafff2", glow: 16, glowColor: "rgba(190,255,220,0.95)" },
+];
+const GOLD_TIERS = [
+  { fill: "rgba(92,70,26,0.92)" }, { fill: "rgba(186,150,66,0.95)" },
+  { fill: "#ffd166", glow: 8, glowColor: "rgba(255,209,102,0.85)" },
+  { fill: "#ffe4a3", glow: 12, glowColor: "rgba(255,225,150,0.9)" },
+  { fill: "#fff6e0", glow: 16, glowColor: "rgba(255,240,210,0.95)" },
+];
+const AS = 3, CELL = 30, ORX = 9, ORY = 21;
+function makeAtlas(tiers) {
+  const c = document.createElement("canvas");
+  c.width = KATA.length * CELL * AS;
+  c.height = tiers.length * CELL * AS;
+  const a = c.getContext("2d");
+  a.scale(AS, AS);
+  a.font = "13px " + KANA_FONT;
+  tiers.forEach((tier, ti) => {
+    [...KATA].forEach((ch, ci) => {
+      a.save();
+      a.translate(ci * CELL, ti * CELL);
+      if (ti === tiers.length - 1) { // chromatic fringe on the white-hot tier only
+        a.fillStyle = "rgba(255,70,90,0.4)"; a.fillText(ch, ORX - 0.7, ORY);
+        a.fillStyle = "rgba(90,150,255,0.4)"; a.fillText(ch, ORX + 0.7, ORY);
+      }
+      if (tier.glow) { a.shadowColor = tier.glowColor; a.shadowBlur = tier.glow; }
+      a.fillStyle = tier.fill;
+      a.fillText(ch, ORX, ORY);
+      if (tier.glow) a.fillText(ch, ORX, ORY);
+      a.restore();
+    });
+  });
+  return c;
+}
+const VIOLET_TIERS = [{ fill: "rgba(70,30,100,0.92)" }, { fill: "#b04dff" }, { fill: "#b04dff", glow: 6, glowColor: "rgba(176,77,255,0.8)" }];
+const ATLAS = { green: makeAtlas(GREEN_TIERS), gold: makeAtlas(GOLD_TIERS), violet: makeAtlas(VIOLET_TIERS) };
+const blit = (ctx, atlas, gi, tier, x, y, size) => {
+  const k = size / 13;
+  ctx.drawImage(atlas, gi * CELL * AS, tier * CELL * AS, CELL * AS, CELL * AS, x - ORX * k, y - ORY * k, CELL * k, CELL * k);
+};
+
+// the rain: rim glyphs on the lid line, a dim filling, the slit, the iris ring
+const rim = Array.from({ length: 52 }, (_, i) => ({ a: (i / 52) * TAU, v: (Math.random() < 0.5 ? -1 : 1) * rnd(0.05, 0.17), gi: gidx(), s: rnd(10, 15), o: rnd(0.5, 0.88), j: rnd(-1.5, 1.5) }));
+const inner = Array.from({ length: 30 }, () => ({ u: rnd(-1, 1), f: rnd(-0.8, 0.8), v: rnd(-0.05, 0.05), gi: gidx(), o: rnd(0.09, 0.22), s: rnd(9, 12) }));
+const irisRing = Array.from({ length: 14 }, () => gidx());
+const irisFill = Array.from({ length: 6 }, () => ({ a: rnd(0, TAU), r: Math.random() * 0.75, v: rnd(-0.2, 0.2), gi: gidx(), o: rnd(0.12, 0.26) }));
+const slit = Array.from({ length: 7 }, () => gidx());
+const makeWave = (pos) => ({ pos: pos ?? Math.random() * TAU, speed: rnd(0.35, 0.7), width: rnd(0.55, 1.05), hot: Math.random() < 0.2 });
+const waves = [makeWave(0), makeWave(Math.PI)];
+const drops = []; // the atmosphere: a few glyphs sinking above the eye, only while it works
+function rimTier(m) {
+  let tier = m.o > 0.72 ? 1 : 0;
+  for (const w of waves) {
+    let d = w.pos - m.a;
+    d -= TAU * Math.floor(d / TAU);
+    if (d < 0.16) tier = Math.max(tier, w.hot ? 4 : 3);
+    else if (d < w.width) tier = Math.max(tier, w.hot && 1 - (d - 0.16) / (w.width - 0.16) > 0.55 ? 3 : 2);
+  }
+  return tier;
+}
+
+const cv = $("eye");
+const DPR = Math.min(2, Math.max(1, (cv.clientWidth / VIEW.w) * (devicePixelRatio || 1))); // device pixels per TV pixel
+const g = cv.getContext("2d");
+const buf = (w, h) => { const c = document.createElement("canvas"); c.width = Math.round(w * DPR); c.height = Math.round(h * DPR); return c; };
+const eyeBuf = buf(BODY.w, BODY.h), eg = eyeBuf.getContext("2d");
+const trailBuf = buf(BODY.w, BODY.h), tg = trailBuf.getContext("2d");
+const bloomBuf = buf(BLOOM.w / 4 / DPR, BLOOM.h / 4 / DPR), bg = bloomBuf.getContext("2d");
+cv.width = VIEW.w * DPR;
+cv.height = VIEW.h * DPR;
+const bodySpace = (ctx) => ctx.setTransform(DPR, 0, 0, DPR, -BODY.x * DPR, -BODY.y * DPR);
+
+// what the eye is feeling: eased, never switched — the TV's exc, plus his gold
+const eye = { open: 0.08, openTo: 0.08, exc: 0, excTo: 0, att: 0, attTo: 0, ring: null, kick: -9, inward: false, speaking: false, t: 0, last: 0, wipe: 0, irisRot: 0, gaze: { x: 0, y: 0, tx: 0, ty: 0, next: 0 } };
+const stats = (window.__eyeStats = { n: 0, ms: 0, max: 0 });
+let raf = 0, focused = true;
+
+function leafPath(ctx, open) {
+  ctx.beginPath();
+  ctx.moveTo(CX - RX, CY);
+  for (let i = 1; i <= 80; i++) {
+    const a = (i / 80) * TAU;
+    ctx.lineTo(CX - Math.cos(a) * RX, CY - lidY(a) * open);
+  }
+  ctx.closePath();
+}
+
+/** The eye body — filling, rim, slit — in one voice's phosphor, onto its own buffer. */
+function drawBody(atlas, f) {
+  eg.save();
+  leafPath(eg, f.open);
+  eg.clip();
+  for (const m of inner) {
+    const lid = RY * f.open * Math.pow(Math.max(1 - m.u * m.u, 0), 0.9);
+    eg.globalAlpha = Math.min(1, m.o * 1.5);
+    blit(eg, atlas, m.gi, m.o > 0.16 ? 1 : 0, CX + m.u * RX, CY + m.f * lid * 0.8, m.s);
+  }
+  eg.restore();
+  for (const m of rim) {
+    const tier = rimTier(m);
+    eg.globalAlpha = tier >= 2 ? 1 : m.o;
+    blit(eg, atlas, m.gi, tier, CX + Math.cos(m.a) * RX * f.pulse, CY + lidY(m.a) * f.pulse * f.open + m.j, m.s);
+  }
+  for (let j = -3; j <= 3; j++) {
+    const tier = j === 0 && f.exc > 0.5 ? 4 : Math.abs(j) === 3 ? 2 : 3;
+    eg.globalAlpha = Math.min(1, f.slitPulse * (Math.abs(j) === 3 ? 0.5 : 1) * (f.inward ? 0.55 : 1) * Math.min(1, f.open * 3));
+    blit(eg, atlas, slit[j + 3], tier, CX - 4 + f.gx, CY + j * 11 * f.open + f.gy, 13);
+  }
+  eg.globalAlpha = 1;
+}
+
+/** One frame: step the simulation by S sixtieths, then composite as the TV does. */
+function paint(now) {
+  const t0 = performance.now();
+  const S = eye.last ? Math.min(8, Math.max(1, (now - eye.last) * 0.06)) : 1;
+  eye.last = now;
+  eye.t += S / 60;
+  const t = eye.t;
+  eye.exc += (eye.excTo - eye.exc) * Math.min(1, 0.04 * S); // ~400 ms ease
+  eye.att += (eye.attTo - eye.att) * Math.min(1, 0.05 * S); // attention leans toward his colour
+  eye.open += (eye.openTo - eye.open) * Math.min(1, 0.06 * S);
+  const exc = eye.exc, open = eye.open;
+  const pulse = 1 + Math.sin(t * (1.1 + 5 * exc)) * (0.025 + 0.028 * exc);
+  const breathe = 1 - 0.09 * (0.5 + 0.5 * noise1(t * 0.63));
+  const gz = eye.gaze;
+  if (t > gz.next) { gz.tx = rnd(-3, 3); gz.ty = rnd(-2, 2); gz.next = t + 1 + Math.random() * 3; }
+  const gk = Math.min(1, 0.22 * S);
+  gz.x += (gz.tx - gz.x) * gk;
+  gz.y += (gz.ty - gz.y) * gk;
+  const f = { open, exc, pulse, inward: eye.inward, gx: gz.x + noise1(t * 2.3) * 0.15, gy: (gz.y + noise1(t * 2.9 + 5) * 0.12) * open, slitPulse: 0.75 + 0.25 * Math.sin(t * (1.1 + 4 * exc)) };
+
+  for (const w of waves) {
+    w.pos += w.speed * (S / 60) * (1 + 1.5 * exc) * (1 + 0.25 * noise1(t * 0.5));
+    if (w.pos > TAU) Object.assign(w, makeWave(w.pos - TAU));
+  }
+  const mutP = (0.003 + 0.005 * exc) * S;
+  for (const m of inner) { m.u += m.v * (S / 60); if (m.u > 1) m.u = -1; else if (m.u < -1) m.u = 1; if (Math.random() < 0.002 * S) m.gi = gidx(); }
+  for (const m of rim) { m.a += m.v * (S / 60) * (1 + exc); if (Math.random() < mutP) m.gi = gidx(); }
+  for (let j = 0; j < 7; j++) if (Math.random() < 0.03 * S) slit[j] = gidx();
+  eye.irisRot += (S / 60) * (0.22 + 0.7 * exc);
+
+  // the body, in green and — as far as it is listening to him — in gold
+  bodySpace(eg);
+  eg.clearRect(BODY.x, BODY.y, BODY.w, BODY.h);
+  if (eye.att < 0.98) drawBody(ATLAS.green, f);
+  if (eye.att > 0.02) { eg.globalAlpha = eye.att; drawBody(ATLAS.gold, f); eg.globalAlpha = 1; }
+
+  // phosphor memory: decay, then feed this frame's light into it
+  tg.setTransform(1, 0, 0, 1, 0, 0);
+  tg.globalCompositeOperation = "destination-out";
+  tg.fillStyle = `rgba(0,0,0,${++eye.wipe % Math.max(1, Math.round(45 / S)) === 0 ? 0.4 : 1 - Math.pow(0.84, S)})`;
+  tg.fillRect(0, 0, trailBuf.width, trailBuf.height);
+  tg.globalCompositeOperation = "source-over";
+  tg.globalAlpha = 0.45;
+  tg.drawImage(eyeBuf, 0, 0);
+  tg.globalAlpha = 1;
+
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, cv.width, cv.height);
+  const bx = (BODY.x - VIEW.x) * DPR, by = (BODY.y - VIEW.y) * DPR;
+  g.globalAlpha = breathe * 0.55;
+  g.drawImage(trailBuf, bx, by);
+  g.globalAlpha = breathe;
+  g.drawImage(eyeBuf, bx, by);
+
+  // bloom: a quarter-res copy of the eye, added back — haze that hugs the glyphs
+  bg.clearRect(0, 0, bloomBuf.width, bloomBuf.height);
+  bg.drawImage(eyeBuf, (BLOOM.x - BODY.x) * DPR, (BLOOM.y - BODY.y) * DPR, BLOOM.w * DPR, BLOOM.h * DPR, 0, 0, bloomBuf.width, bloomBuf.height);
+  g.globalCompositeOperation = "lighter";
+  g.globalAlpha = 0.3 * breathe;
+  g.drawImage(bloomBuf, (BLOOM.x - VIEW.x) * DPR, (BLOOM.y - VIEW.y) * DPR, BLOOM.w * DPR, BLOOM.h * DPR);
+  g.globalCompositeOperation = "source-over";
+  g.globalAlpha = 1;
+
+  g.setTransform(DPR, 0, 0, DPR, -VIEW.x * DPR, -VIEW.y * DPR);
+  g.save();
+  leafPath(g, open);
+  g.clip();
+  // scanlines: faint row shading living only inside the eye — CRT whisper
+  g.globalCompositeOperation = "destination-out";
+  g.fillStyle = "rgba(0,0,0,0.10)";
+  for (let sy = CY - RY; sy < CY + RY; sy += 3) g.fillRect(CX - RX, sy, RX * 2, 1);
+  g.globalCompositeOperation = "source-over";
+  // the iris: the brain's violet, a ring of glyphs slowly turning, behind the lids
+  for (const p of irisFill) {
+    p.a += p.v * (S / 60);
+    if (Math.random() < 0.004 * S) p.gi = gidx();
+    g.globalAlpha = p.o;
+    blit(g, ATLAS.violet, p.gi, 1, CX + f.gx + Math.cos(p.a) * IRIS_RX * p.r, CY + f.gy + Math.sin(p.a) * IRIS_RY * p.r * open, 10);
+  }
+  g.globalAlpha = 0.62 + (eye.speaking || eye.inward ? 0.2 : 0);
+  irisRing.forEach((gi, i) => {
+    if (Math.random() < 0.005 * S) irisRing[i] = gi = gidx();
+    const a = eye.irisRot + (i / 14) * TAU;
+    blit(g, ATLAS.violet, gi, 1, CX + f.gx + Math.cos(a) * IRIS_RX, CY + f.gy + Math.sin(a) * IRIS_RY * open, 12);
+  });
+  g.globalAlpha = 1;
+  g.restore();
+
+  // the ripple: listening in the Eye's mid green leaning gold, speaking in the iris's violet,
+  // and the one the tap itself sets off, so the touch is answered on this very frame
+  const ripple = (k, rgb, a) => {
+    g.strokeStyle = `rgba(${rgb},${a * (1 - k)})`;
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.ellipse(CX, CY, (RX + 6) * (1 + k * 0.15), (RY + 12) * (1 + k * 0.4) * Math.max(open, 0.3), 0, 0, TAU);
+    g.stroke();
+  };
+  const mid = `${139 + 116 * eye.att | 0},${255 - 30 * eye.att | 0},${193 - 43 * eye.att | 0}`;
+  if (eye.ring === "listening") ripple((t % 1.1) / 1.1, mid, 0.5);
+  if (eye.ring === "speaking") ripple(((t + 0.55) % 1.1) / 1.1, "176,77,255", 0.45);
+  if (t - eye.kick < 0.6) ripple((t - eye.kick) / 0.6, mid, 0.7);
+
+  // the atmosphere: a handful of glyphs sinking above the eye, only while it works
+  if (exc > 0.05 && drops.length < 14 && Math.random() < 0.08 * S) drops.push({ x: rnd(50, 290), y: VIEW.y - 10, v: rnd(9, 18), gi: gidx(), o: rnd(0.05, 0.13), s: rnd(9, 12) });
+  const dropAtlas = eye.att > 0.5 ? ATLAS.gold : ATLAS.green;
+  for (let i = drops.length - 1; i >= 0; i--) {
+    const d = drops[i];
+    d.y += d.v * (S / 60);
+    if (d.y > CY - RY - 30 || exc < 0.01) { drops.splice(i, 1); continue; }
+    g.globalAlpha = d.o * Math.min(1, exc * 3) * Math.min(1, (d.y - VIEW.y + 10) / 40);
+    blit(g, dropAtlas, d.gi, 1, d.x, d.y, d.s);
+  }
+  g.globalAlpha = 1;
+
+  const ms = performance.now() - t0;
+  stats.n++; stats.ms += ms; if (ms > stats.max) stats.max = ms;
+}
+
+const decoders = new Set();
+const busy = () =>
+  decoders.size > 0 || eye.ring || eye.exc > 0.01 || eye.att > 0.01 || Math.abs(eye.open - eye.openTo) > 0.004 ||
+  eye.excTo > 0 || eye.attTo > 0 || eye.t - eye.kick < 0.6 || drops.length > 0;
+
+/** The settled eye is not a dead one: at ready it keeps living, at IDLE_FPS. */
+const idling = () => !STILL && focused && !document.hidden && disc.dataset.state === "ready";
+
+/** One frame after another while it works or rests; nothing at all while he is away. */
+function frame(now) {
+  raf = 0;
+  paint(now);
+  for (const d of decoders) d.step(now);
+  if ((busy() || idling()) && !document.hidden && focused) raf = requestAnimationFrame(frame);
+  else { eye.last = 0; eye.open = eye.openTo; eye.exc = eye.excTo; eye.att = eye.attTo; }
+}
+const wake = () => { if (!raf && !document.hidden && focused) raf = requestAnimationFrame(frame); };
+/** A still eye for those who asked for no motion: every state as one settled frame. */
+function still() {
+  eye.open = eye.openTo; eye.exc = eye.excTo; eye.att = eye.attTo; eye.t += 0.4;
+  paint(performance.now());
+  eye.last = 0;
+}
+
+/** What the eye does in each state — the TV's excitement, plus his gold while it listens. */
+const MOOD = {
+  locked: { open: 0.08, exc: 0, att: 0, ring: null },
+  ready: { open: 1, exc: 0, att: 0, ring: null },
+  listening: { open: 1, exc: 0.55, att: 1, ring: "listening" },
+  thinking: { open: 1, exc: 0.3, att: 0, ring: null, inward: true },
+  speaking: { open: 1, exc: 1, att: 0, ring: "speaking", speaking: true },
+  offline: { open: 1, exc: 0, att: 0, ring: null },
+};
+function mood(name) {
+  const m = MOOD[name];
+  eye.openTo = m.open; eye.excTo = m.exc; eye.attTo = m.att; eye.ring = STILL ? null : m.ring;
+  eye.inward = !!m.inward; eye.speaking = !!m.speaking;
+  if (STILL) return still();
+  wake();
+}
+
+// -- the decode: words resolving out of katakana noise, 38 a second, as on the TV
+const CPS = 38;
+/** The text an element shows, and the moment each character resolves. */
+function decoder(el) {
+  const d = { el, text: "", at: [], noise: [], done: true };
+  /** New text: what was already there keeps its moments, the rest resolves from now across `ms`. */
+  d.set = (text, ms = 0, from = performance.now()) => {
+    let p = 0;
+    while (p < d.text.length && p < text.length && d.text[p] === text[p]) p++;
+    const fresh = [...text.slice(p)].filter((c) => c !== " ").length;
+    const cps = ms > 0 && fresh ? Math.min(CPS, (fresh * 1000) / ms) : CPS;
+    d.at.length = d.noise.length = p;
+    for (let i = p, k = 0; i < text.length; i++) {
+      d.at.push(STILL ? 0 : from + (k / cps) * 1000);
+      d.noise.push(kata());
+      if (text[i] !== " ") k++;
+    }
+    d.text = text;
+    d.done = false;
+    if (from === Infinity) decoders.delete(d); // held for its voice: nothing to step until reveal
+    else { decoders.add(d); wake(); }
+    d.step(performance.now());
+  };
+  /** Hide every character until `reveal` — a reply waits for its own voice. */
+  d.hold = (text) => { d.set(text, 0, Infinity); };
+  d.reveal = (ms) => { if (!d.done && d.at[0] === Infinity) { d.text = ""; d.set(d.el.dataset.text, ms); } };
+  d.step = (now) => {
+    const runs = [];
+    let cur = null, all = true;
+    for (let i = 0; i < d.text.length; i++) {
+      const dt = d.at[i] - now;
+      const st = dt <= 0 ? (dt > -160 ? "h" : "") : dt < 900 ? "n" : null;
+      if (st !== "") all = false;
+      if (st === null) continue;
+      if (st === "n" && Math.random() < 0.25) d.noise[i] = kata();
+      const ch = st === "n" ? (d.text[i] === " " ? " " : d.noise[i]) : d.text[i];
+      if (cur && cur.st === st) cur.s += ch;
+      else runs.push((cur = { st, s: ch }));
+    }
+    el.replaceChildren(...runs.map((r) => { if (!r.st) return r.s; const s = document.createElement("span"); s.className = r.st; s.textContent = r.s; return s; }));
+    if (all) { d.done = true; decoders.delete(d); }
+    else if (el === log.lastElementChild) log.scrollTop = log.scrollHeight;
+  };
+  return d;
+}
+
+// -- the state ---------------------------------------------------------------
+let ctx = null, node = null, stream = null;
+let recording = false, tapId = null, failsafe = null, blocks = [], seq = 0, polling = false;
+let utt = null, outSeq = 0, streamed = 0, flushing = false, flusher = null;
+let liveEl = null; // the gold line growing under his thumb
+let offline = false;
+const queue = []; // replies decoded and waiting their turn, one WAV at a time
+let playing = false;
+let poll = null, thinking = null;
+
+/** The eye's mood and the line under it, together: one state, one sentence. */
+const state = (name, text, warn) => {
+  if (name && name !== disc.dataset.state) {
+    disc.dataset.state = name;
+    mood(name);
+    try { navigator.vibrate?.(10); } catch {}
+  }
+  statusEl.innerHTML = text;
+  statusEl.classList.toggle("warn", !!warn);
+};
+const ready = () => state("ready", READY);
+const warn = (text) => state(null, text, true);
+
+/** One line in the transcript, `me` gold or `eye` green, with its decoder. */
+function line(who, text, held) {
+  const el = document.createElement("p");
+  el.className = "line " + who;
+  el.dataset.text = text;
+  el.dec = decoder(el);
+  held ? el.dec.hold(text) : el.dec.set(text);
+  log.append(el);
+  log.scrollTop = log.scrollHeight;
+  return el;
+}
+
+// -- the key ----------------------------------------------------------------
+
+/** A fresh page starts from now — never from the 5-minute ring of replies already heard. */
+async function enter() {
+  gate.classList.add("hide");
+  log.classList.remove("hide");
+  disc.disabled = false;
+  ready();
+  const r = await fetch("/remote/cursor").catch(() => null);
+  if (r && r.ok) seq = (await r.json()).seq ?? 0;
+  else try { seq = Number(sessionStorage.getItem("seq")) || 0; } catch {}
+  loop();
+}
+
+/** Back to the key field — the cookie is gone or the body was restarted. The eye closes. */
+function locked() {
+  gate.classList.remove("hide");
+  log.classList.add("hide");
+  disc.disabled = true;
+  state("locked", "");
+}
+
+$("keyform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const key = $("key").value;
+  $("key").value = ""; // it lives no longer than this line: the cookie is the session
+  $("refused").textContent = "";
+  const r = await fetch("/remote/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
+  }).catch(() => null);
+  if (r && r.ok) return enter();
+  eye.kick = eye.t; wake();
+  $("refused").textContent = r ? "That key was refused" : "The body did not answer · check Tailscale";
+});
+
+still(); // the closed eye is on screen before the cookie is known
+fetch("/remote/audio", { method: "POST", body: new Uint8Array(0) })
+  .then((r) => (r.ok ? enter() : locked()))
+  .catch(() => locked());
+
+// -- tapping the eye --------------------------------------------------------
+
+/** The context is made and resumed inside the tap — that is what buys iOS autoplay. */
+function unlock() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+  if (ctx.state !== "running") ctx.resume();
+}
+
+/** The mic, once: the stream and the worklet are kept, only the tap is switched. */
+async function openMic() {
+  if (node) return;
+  stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+  await ctx.audioWorklet.addModule("worklet.js");
+  node = new AudioWorkletNode(ctx, "downsampler");
+  node.port.onmessage = (e) => blocks.push(e.data);
+  ctx.createMediaStreamSource(stream).connect(node);
+  const mute = ctx.createGain(); // a worklet only runs while it reaches a destination
+  mute.gain.value = 0;
+  node.connect(mute).connect(ctx.destination);
+}
+
+/** Off the air: the gold goes out, the failsafe and the uploader are dropped. */
+function idle() {
+  recording = false;
+  tapId = null;
+  clearTimeout(failsafe);
+  clearInterval(flusher);
+  disc.setAttribute("aria-pressed", "false");
+}
+
+/** The first tap of the pair: gold eye, open mic, and 90 s on the clock. */
+async function begin() {
+  if (recording || offline) return;
+  unlock();
+  recording = true;
+  blocks = [];
+  utt = Math.random().toString(36).slice(2, 10);
+  outSeq = 0;
+  streamed = 0;
+  liveEl = null;
+  flusher = setInterval(flush, FLUSH_MS);
+  clearTimeout(thinking);
+  disc.setAttribute("aria-pressed", "true");
+  state("listening", "Tap again to send");
+  failsafe = setTimeout(stop, MAX_MS);
+  try {
+    await openMic();
+  } catch (err) {
+    idle();
+    return state("ready", "Microphone refused · allow it for this site", true);
+  }
+  if (recording) node.port.postMessage("on");
+}
+
+/**
+ * A second of his voice on its way, in order: the blocks the worklet has handed
+ * over since the last one. A block that fails keeps its seq and goes again — the
+ * body appends by number, so nothing lands out of order.
+ */
+async function flush() {
+  if (flushing || !utt || !blocks.length) return;
+  flushing = true;
+  const body = concat(blocks.splice(0));
+  const id = utt;
+  const r = await fetch(`/remote/stream?utt=${id}&seq=${outSeq}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body,
+  }).catch(() => null);
+  if (r && r.ok) {
+    outSeq++;
+    streamed += body.length;
+  } else if (r && r.status === 401) {
+    flushing = false;
+    return locked();
+  } else if (r && r.status === 413) {
+    flushing = false;
+    warn("That is all one turn holds · sending it");
+    return void stop();
+  } else blocks.unshift(body); // the tunnel blinked: the same seq goes again
+  flushing = false;
+}
+
+/** The second tap — or the failsafe, or the page leaving: send what was captured. */
+async function stop() {
+  if (!recording) return;
+  const id = utt;
+  utt = null; // no partial after the tap: the line he has is the one that settles
+  idle();
+  node?.port.postMessage("off"); // which also flushes the tail block
+  await new Promise((r) => setTimeout(r, 60));
+  while (flushing) await new Promise((r) => setTimeout(r, 30)); // the tail goes last
+  const tail = concat(blocks.splice(0));
+  const send = (body) =>
+    fetch(`/remote/audio?utt=${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body,
+    });
+  if (streamed + tail.length < MIN_SAMPLES) {
+    send(tail).catch(() => {}); // nothing worth hearing, but the body's buffer goes free
+    return state("ready", "Too short · tap, say it, tap again", true);
+  }
+  state("thinking", "Thinking");
+  const r = await send(tail).catch(() => null);
+  if (!r) return state("ready", "No answer · check Tailscale, then tap again", true);
+  if (r.status === 401) return locked();
+  const { transcript } = await r.json();
+  settle(transcript);
+}
+
+/** His words as they are said: one gold line that keeps resolving as it grows. */
+function grow(id, text) {
+  if (id !== utt || !text) return;
+  if (!liveEl) liveEl = line("me", text);
+  else {
+    liveEl.dataset.text = text;
+    liveEl.dec.set(text);
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+/** The final transcript takes the growing line's place — the same line, settled. */
+function settle(text) {
+  if (!text) {
+    liveEl?.remove();
+    liveEl = null;
+    return state("ready", "Nothing heard · try again, closer to the mic", true);
+  }
+  if (liveEl) { liveEl.dataset.text = text; liveEl.dec.set(text); }
+  else line("me", text);
+  liveEl = null;
+  thinking = setTimeout(() => state("ready", "No reply came · tap to ask again", true), 60_000); // the eye does not brood all night
+}
+
+/** One tap in, one tap out — his earbuds' gesture, not a walkie-talkie's. */
+function toggle(e) {
+  e.preventDefault();
+  if (disc.disabled) return;
+  eye.kick = eye.t; // the ring answers the touch on the next frame, whatever follows
+  wake();
+  if (recording) return void stop();
+  tapId = e.pointerId ?? null;
+  begin();
+}
+
+/** The Int16 blocks of one recording, end to end. */
+function concat(parts) {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Int16Array(total);
+  let i = 0;
+  for (const p of parts) {
+    out.set(p, i);
+    i += p.length;
+  }
+  return out;
+}
+
+disc.addEventListener("pointerdown", toggle);
+// a cancel on the tap that started it is not a release; any other one is an interruption
+disc.addEventListener("pointercancel", (e) => {
+  if (e.pointerId !== tapId) stop();
+});
+// the space bar is the desk's thumb
+addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || e.repeat || disc.disabled) return;
+  if (document.activeElement === $("key")) return;
+  toggle(e);
+});
+
+// -- what comes back --------------------------------------------------------
+
+/** One long-poll after another while the page is in front of him. */
+async function loop() {
+  if (polling) return;
+  polling = true;
+  try {
+    while (!document.hidden) {
+      if (offline) {
+        await fetch("/remote/cursor"); // a quick answer, not a 50 s poll, is what says the tunnel is back
+        offline = false;
+        if (!recording) ready();
+      }
+      poll = new AbortController();
+      const r = await fetch("/remote/poll?since=" + seq, { signal: poll.signal });
+      if (r.status === 401) return locked();
+      const reply = await r.json();
+      if (!reply) continue;
+      seq = reply.seq;
+      try { sessionStorage.setItem("seq", seq); } catch {}
+      if (reply.partial !== undefined) {
+        grow(reply.utt, reply.partial);
+        continue;
+      }
+      clearTimeout(thinking);
+      const el = line("eye", reply.text || "…", !!reply.audio); // with a voice, the words wait for it
+      if (reply.audio) play(reply.audio, el, reply.seq);
+      else ack(reply.seq);
+    }
+  } catch {
+    if (!recording) {
+      offline = true;
+      state("offline", "Offline · reconnecting", true);
+    }
+    setTimeout(loop, 2000); // the tunnel dropped; it comes back
+  } finally {
+    polling = false;
+  }
+}
+
+/** The reply decoded and queued: the voice waits its turn, and the words decode with it. */
+async function play(url, el, n) {
+  try {
+    const bytes = await (await fetch(url)).arrayBuffer();
+    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+    queue.push({ buf: await ctx.decodeAudioData(bytes), el, n });
+    playing ? speaking() : pump();
+  } catch {
+    ack(n); // the text is on screen; nothing to replay
+    el.dec.reveal();
+    warn("The reply audio is gone · ask again");
+  }
+}
+
+/** A reply heard to the end never comes back on a reload. */
+const ack = (n) =>
+  fetch("/remote/ack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ seq: n }) }).catch(() => {});
+
+/** One WAV at a time, in order; a suspended context stops the line at a ▶ button. */
+function pump() {
+  if (playing || !queue.length) return;
+  if (ctx.state !== "running") return offer(queue[0]);
+  const { buf, el, n } = queue.shift();
+  playing = true;
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  src.onended = () => {
+    playing = false;
+    ack(n);
+    if (queue.length) return pump();
+    if (!recording) ready();
+  };
+  src.start();
+  el.dec.reveal(buf.duration * 1000); // the words keep pace with the voice, never faster than the TV
+  speaking();
+}
+const speaking = () => state("speaking", queue.length ? `${queue.length} more waiting` : "");
+
+/** A suspended context never fails silently: he gets a button, and it drains the queue. */
+function offer(item) {
+  item.el.dec.reveal();
+  if (item.el.querySelector("button")) return;
+  const b = document.createElement("button");
+  b.textContent = "▶ play";
+  b.addEventListener("click", async () => {
+    await ctx.resume();
+    b.remove();
+    pump();
+  });
+  item.el.append(b);
+  warn("Tap ▶ on the reply to hear it");
+}
+
+// the phone's radio says so before a hanging poll would
+addEventListener("offline", () => {
+  if (!recording) {
+    offline = true;
+    state("offline", "Offline · reconnecting", true);
+  }
+});
+addEventListener("online", () => poll?.abort()); // the hung poll fails now and the loop comes back
+addEventListener("blur", () => { focused = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } });
+addEventListener("focus", () => { focused = true; eye.last = 0; wake(); });
+addEventListener("visibilitychange", () => {
+  if (document.hidden) { stop(); return; } // his words go now, not when he comes back
+  focused = true;
+  eye.last = 0;
+  wake();
+  if (!disc.disabled) loop();
+});
+</script>
+</body>
+</html>

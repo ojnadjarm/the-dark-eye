@@ -1,5 +1,7 @@
 # Phase A Spec — The Eye (v2)
 
+*Historical (Windows-era, D9). Superseded by `PLAN-UBUNTU.md` and `PLAN-LOWRES.md`; the shipped look is `spec/eye-reference.html`, ported in `body/render`. Kept unrewritten.*
+
 > The ethereal form. Navi's descendant, but not a notifier: the Eye IS the
 > main agent. DarkSaddler, orchestrator, present on screen.
 

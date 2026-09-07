@@ -3,4 +3,8 @@ dist/
 *.log
 body/models/
 body/scripts/*.wav
+body/scripts/ab/
 inbox/
+body/render/target/
+body/render-gpu/target/
+__pycache__/

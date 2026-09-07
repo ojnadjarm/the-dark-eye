@@ -1,0 +1,6 @@
+# The Dark Eye (E08) — earbud push-to-talk.
+# The owner's running session is not in group `input`, and logind's `uaccess` ACL is
+# not applied to the AVRCP node when BlueZ re-creates it on a profile switch, so the
+# ACL is set here explicitly. Without it the sidecar cannot re-grab the node.
+ACTION=="add|change", SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="*AVRCP*", TAG+="uaccess", GROUP="input", MODE="0660", RUN+="/usr/bin/setfacl -m u:@USER@:rw $devnode"
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput", RUN+="/usr/bin/setfacl -m u:@USER@:rw $devnode"

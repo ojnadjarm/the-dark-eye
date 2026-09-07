@@ -11,35 +11,31 @@ you watch it happen and ask about it out loud. *Visibility replaces review.*
 
 ## Architecture (the spine)
 
-**Core principle: the body is an MCP server — model-agnostic by contract.**
-Any MCP client (Claude Agent SDK, another framework, a local model with an
-MCP-capable loop) can possess the Eye. The brain is a plug, not a foundation.
-Same pattern as Navi's `notify` tool, scaled up.
+**Core principle: the body is an HTTP bridge any curl-class client speaks.**
+Six routes on `127.0.0.1:8642` behind a shared secret — speak, listen, mic,
+status, show, health — and that is the whole contract. A brain is anything that
+can run `curl`: the Claude orchestrator session, a fleet agent, a shell script,
+a local model with a loop. The brain is a plug, not a foundation, and the body
+never depends on which one is holding the other end.
 
 ```
-┌─ Windows ─────────────────────────┐        ┌─ WSL2 ────────────────────────┐
-│  Electron overlay ("the body")    │  MCP   │  Brain #1: Claude Agent SDK   │
-│  = MCP server exposing:           │◄──────►│  (subagents, hooks, tools)    │
-│   • speak(text, mood?)            │        │  Brain #N: anything MCP-      │
-│   • listen() → transcript         │        │  capable (local model, etc.)  │
-│   • agent_status(id, state, info) │        └───────────────────────────────┘
-│   • the Eye + jack-in rain        │        Soul: DarkSaddler prompt file,
-└───────────────────────────────────┘        loaded by whatever brain drives
-     STT: faster-whisper · TTS: Piper/Kokoro (local, inside the body)
+ TV ◄── node body: eye-render overlay + canvas + voice worker (Parakeet in, Kokoro out)
+            ▲  bridge :8642 — speak · listen · mic · status · show · health
+            │
+      any brain that can curl  ── the orchestrator today, via the /eye skill
 ```
 
 - **One world, always running.** The Eye is the world at minimum zoom.
   Jacking in = same scene, fullscreen camera. Never a separate app to open —
   zero entry toll.
-- **Three model-agnostic pieces:** the body (MCP server), the hands (tools as
-  MCP servers), the soul (a prompt file any brain loads). Only the agent loop
-  is per-brain — Claude Agent SDK is brain #1 because it gives subagents,
-  hooks, and permissions for free, not because anything depends on it.
-- **Agent visibility rides MCP too:** brains report activity via
-  `agent_status` calls; the rain renders whatever it's told. A brain that
-  reports nothing still talks — degraded gracefully.
-- **Body owns the hardware** (mic/speakers/screen, on Windows — WSL2 never
-  touches audio). Same split as Navi, already shipped once.
+- **Three plug-agnostic pieces:** the body (the bridge), the hands (tools the
+  brain already has), the soul (a prompt file any brain loads). Only the agent
+  loop is per-brain.
+- **Agent visibility rides the same bridge:** brains report activity with
+  `status` calls; the eye renders whatever it is told. A brain that reports
+  nothing still talks — degraded gracefully.
+- **The body owns the hardware** — mic, speakers, screen. Nothing else touches
+  audio.
 
 ## The Field (interior — see spec/B-the-field.md)
 
@@ -65,11 +61,12 @@ opinionated, pushes back. Not a bot — an Eye.
 
 1. **It talks** — SDK loop + soul + mic → whisper → Claude → TTS → speakers.
    No graphics. Jarvis is already real at the end of this slice.
-2. **The Eye appears** — Electron transparent overlay, glyph-knot Eye in the
-   corner, speaks, flickers with agent activity.
+2. **The Eye appears** — a transparent click-through overlay, glyph-knot Eye in
+   the corner, speaks, flickers with agent activity. Shipped in Electron, then
+   ported to `eye-render` (Rust) for the idle cost — `PLAN-LOWRES.md`.
 3. **Jack in** — fullscreen datastream, agent columns, ask-by-voice targeting.
-4. **Hands** — real assistant duties: files, calendar/email via MCP, running
-   agents on Oscar's projects.
+4. **Hands** — real assistant duties: files, calendar and email through the
+   brain's own tools, running agents on Oscar's projects.
 
 Rule inherited from every dead project before this one: **it talks before it's
 pretty.** No silent build phases.

@@ -1,5 +1,7 @@
 # Research Digest: Elevating the Glyph Eye (2D canvas, transparent Electron overlay)
 
+*Historical (Windows-era, D9). Superseded by `PLAN-UBUNTU.md` and `PLAN-LOWRES.md`; the shipped look is `spec/eye-reference.html`, ported in `body/render`. Kept unrewritten.*
+
 Scope: visual-quality techniques for the existing katakana cat-eye. Concept stays; execution gets professional.
 
 ---

@@ -1,0 +1,22 @@
+[Unit]
+Description=The Dark Eye — earbud push-to-talk (right-bud double tap opens the mic)
+After=dark-eye.service
+PartOf=graphical-session.target
+# mpris-proxy registers an MPRIS player with BlueZ, which then routes AVRCP over
+# D-Bus and the uinput node emits nothing at all (E07). It cannot run with this.
+Conflicts=mpris-proxy.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+Environment=PTT_DEVICE=AVRCP
+Environment=PTT_KEY=KEY_NEXTSONG
+Environment=NEXT_KEY=KEY_PREVIOUSSONG
+ExecStart=/usr/bin/python3 %h/the-dark-eye/body/linux/ptt-earbuds.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

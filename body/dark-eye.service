@@ -1,0 +1,26 @@
+[Unit]
+Description=The Dark Eye — body (eye overlay, voice worker, bridge on 127.0.0.1:8642)
+After=graphical-session.target
+PartOf=graphical-session.target
+# 5 failed starts in 5 min and systemd gives up instead of looping forever
+StartLimitIntervalSec=300
+StartLimitBurst=5
+OnFailure=dark-eye-failed.service
+
+[Service]
+Type=simple
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=DISPLAY=:0
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+WorkingDirectory=%h/the-dark-eye/body
+# node comes from nvm's current default (never a pinned version). The body is
+# plain node now (bridge, voice worker, eye-render, audio), so `exec` keeps it
+# as the unit's main process and its log inside the unit's journal.
+ExecStart=/bin/bash -c '[ -s %h/.nvm/nvm.sh ] && . %h/.nvm/nvm.sh >/dev/null; command -v node >/dev/null || { echo "[body] no node on PATH — is the nvm default installed?"; exit 127; }; exec node %h/the-dark-eye/body/src/main.js'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target

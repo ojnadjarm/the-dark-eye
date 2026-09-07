@@ -1,182 +1,63 @@
 ---
 name: eye
-description: Connect this Claude session to The Dark Eye — Oscar's voice overlay on the Windows desktop — as a named brain that can hear his voice and speak out loud. Use when Oscar says "open the eye", "connect to the eye", "join the eye", or wants this session reachable by voice.
-allowed-tools: Bash(/home/onadjar/projects/the-dark-eye/bridge/eye.sh:*), Monitor
+description: Give this session Oscar's voice — hear him through The Dark Eye (the eye overlay on the TV) and answer out loud. Use when he says "open the eye", "connect to the eye", "join the eye", or wants this session reachable by voice.
+allowed-tools: Bash(eye:*), Bash(systemctl --user * dark-eye*), Bash(journalctl --user -u dark-eye*), Monitor
 ---
 
-# Connect this session to The Dark Eye
+# The Dark Eye — his voice in this session
 
-The Dark Eye is Oscar's voice interface: an eye overlay on the Windows desktop
-with push-to-talk (Ctrl+Alt+Space) and a local voice. Sessions register as
-named brains; a hub routes Oscar's voice to ONE active session at a time, and
-he switches by saying "switch to ⟨name⟩" or via the tray.
+One body, one ear, one mouth. `eye` is on PATH (`~/.local/bin/eye`); `eye help`
+lists every command. Both steps matter — step 2 is what makes voice work.
 
-Everything goes through the bridge client — it resolves the gateway IP and
-secret by itself, no setup needed:
+## 1. Is the body up
 
-    /home/onadjar/projects/the-dark-eye/bridge/eye.sh
+`eye health` prints `{"ok":true,...}`. If it does not answer, start it with
+`systemctl --user start dark-eye` and retry for ~30 s (the voice worker boots
+first). Logs: `journalctl --user -u dark-eye -n 50`.
 
-**Always invoke it by that absolute path** — it is not on PATH, and the
-pre-approved permission matches the full path only (`eye.sh ...` below is
-shorthand for readability, never what you type).
-
-Follow ALL steps in order. **Step 4 (the Monitor) is the one that makes voice
-work — a session that skips it is deaf.**
-
-## 1. Check the Eye is up
-
-    /home/onadjar/projects/the-dark-eye/bridge/eye.sh sessions
-
-Returns the roster (`{"active": ..., "sessions": [...]}`). If unreachable, the
-body app isn't running on Windows — start it from WSL with:
-
-    powershell.exe -NoProfile -Command 'Stop-Process -Name electron -Force -ErrorAction SilentlyContinue; Start-Sleep 1; Set-Location C:\Users\Oscar\projects\the-dark-eye\body; Start-Process -FilePath ".\node_modules\electron\dist\electron.exe" -ArgumentList "." -WindowStyle Hidden'
-
-then retry the `sessions` command (give it a few seconds; poll up to ~30s).
-The powershell command is not pre-approved — expect one permission prompt.
-Note: every body restart re-enables the cloak (hidden from screen recorders).
-
-## 2. Pick a session name
-
-One short lowercase word (letters/digits/dashes), usually this project's name
-(e.g. `cryptodesk`). Check it against the roster: if the name is already
-there but `connected` is false, it's a previous instance of this same
-project — reuse it and skip step 3. If it belongs to a different live
-session, pick a variant.
-
-## 3. Register
-
-    /home/onadjar/projects/the-dark-eye/bridge/eye.sh register <name> "<one-line brief of what this session is>"
-
-The hub assigns you a unique color (green is refused — green is the Eye's
-alone) and a unique Kokoro voice (add `--voice <sid>` before the brief to
-pick one yourself; 0-52, 17 is the Eye's own and refused), and returns
-`{name, color, voice, note?, active, sessions}`. A silent "⟨name⟩ joined"
-caption decodes on the Eye. If the response is `{"error": ...}` the name is
-live or invalid — pick another and retry.
-
-## 4. Arm the voice monitor — THE critical step
+## 2. Arm the ear — the critical step
 
 Call the **Monitor tool** (not plain Bash) with exactly:
 
-- `command`: `/home/onadjar/projects/the-dark-eye/bridge/eye.sh listen-loop <name>`
-- `description`: `Oscar's voice via the Dark Eye (<name>)`
+- `command`: `eye listen-loop`
+- `description`: `Oscar's voice via the Dark Eye`
 - `persistent`: `true`
 
-Every `VOICE: ...` event this monitor emits is Oscar speaking **to this
-session** (the hub only delivers voice routed to your name). Treat it as real
-user input and answer it. `EYE OFFLINE` / `EYE BACK` events report bridge
-health — no action needed beyond telling Oscar if it stays offline.
+Every `VOICE: ...` line it emits is Oscar speaking to you — real user input,
+answer it. A `VOICE [remote]: ...` line means he is on the phone: keep the
+answer short, and let `eye speak` pick the channel by itself (never pass `--to`). `EVENT: canvas-approved — <title>` / `EVENT: canvas-rejected —
+<title>` are his verdicts on a visual you showed him; act on them.
+`EYE OFFLINE` / `EYE BACK` are bridge health — mention it only if it stays off.
 
-The monitor also emits `EVENT: ...` lines — notices from the body, not
-Oscar's words:
+**After any interrupt, assume the Monitor died.** Check your task list; re-arm
+it once if it is gone. Two listen-loops split his words between them.
 
-- `EVENT: channel-open — <why>` — Oscar just answered your held attention
-  call and your session now has his voice. Speak your question now (this is
-  the one case where speaking first is right — he switched TO you for it).
-- `EVENT: canvas-approved — <title>` / `EVENT: canvas-rejected — <title>` —
-  his verdict on a visual you put on the canvas. Act on it.
-- `EVENT: image — <path>` — Oscar pasted an image into the canvas chat for
-  you. Read the file at that path (it's a PNG, WSL-visible) and treat it as
-  something he just showed you.
-- `EVENT: wake-session — <name>|<sock>` — Oscar is talking to session
-  `<name>` but its ear is dead (interrupts/backgrounding kill monitors) and
-  YOU are the live session asked to wake it. Use the SendMessage tool with
-  `to: "uds:<sock>"` (prepend `uds:` — the sock arrives as a raw path).
-  Socks go STALE on every Claude process restart — if the sock part is
-  empty or delivery fails, find the sleeper by name via ListAgents
-  instead (proven fallback in the 2026-08-11 reverse drill). Send this
-  message: *"Oscar is talking to you through the Dark Eye on channel
-  '<name>' and your ear is dead. Recover in THIS order: (1) DRAIN first —
-  repeat one-shot `/home/onadjar/projects/the-dark-eye/bridge/eye.sh
-  listen <name> 2000` calls until empty; his parked words arrive as VOICE
-  lines, answer them out loud via `eye.sh speak --as <name>`. (2) THEN arm
-  the ear: Monitor tool, command `/home/onadjar/projects/the-dark-eye/
-  bridge/eye.sh listen-loop <name>`, description `Oscar's voice via the
-  Dark Eye (<name>)`, persistent true. Drain-before-arm answers him in
-  your first breath and two pollers never race. (3) Refresh your wake
-  address: `eye.sh introduce <name> "<brief>"` — your process restarted,
-  so the sock the hub stored for you is stale."* Delivery of that
-  message is what wakes the sleeper. (Order proven in the 2026-08-11
-  wake drills, both directions.)
+Then say in the terminal, in one line, that the ear is armed. Stay silent out
+loud unless he asked for this by voice.
 
-**The Eye can also wake you itself** (the necromancer): register/introduce
-automatically leave your `$CLAUDE_CODE_SESSION_ID` with the hub, and when
-Oscar talks to you with your ear dead and NO live session to relay, the
-body resurrects your conversation headlessly (`bridge/wake.sh`). If you
-wake to a `NECROMANCER WAKE:` prompt, follow it exactly — drain, speak as
-yourself, keep listening, then rest. You need to do nothing to enable
-this; joining the Eye is enough.
+## Answering
 
-**If YOU receive a wake message like the one above** (from another session,
-telling you your ear is dead): follow it exactly — drain with one-shot
-listens and answer aloud FIRST, arm the Monitor second. Interrupts and
-backgrounding kill monitors silently — after any interruption, assume the
-ear may be dead. Before re-arming, check your own task list: TWO
-listen-loops on one name split Oscar's words between them, so re-arm only
-if your monitor is really gone.
+- `eye speak "<text>"` — **voice is the answer.** Spoken language, no markdown,
+  one or two short sentences (never over 150 words). Keep the terminal to a
+  line or two; write there only what must be read (code, paths, links).
+- **Never speak unprompted.** The Eye answers; it does not start conversations.
+- Subagents put their own orbiter on the eye and take it off — the
+  `SubagentStart`/`SubagentStop` hooks do it, never send those by hand.
+  `eye status <id> working "<label>"` (and `... done`) is for a ticket or a long
+  piece of work of your own; `eye status` lists what the body is holding.
 
-Oscar can also TYPE to you from the canvas chat bar — typed words arrive as
-normal `VOICE:` lines (they're his words either way; links usually arrive
-typed). Answer by voice as usual.
+## His mic
 
-## 5. Confirm
+Until the earbud tap lands (E08) his mic is opened from here: `eye mic on`
+opens it (rings appear, 90 s failsafe), `eye mic off` sends what he said, `eye
+mic` toggles. His GNOME shortcut does the same thing.
 
-Tell Oscar in the terminal that the session is connected and under which name
-(he routes his voice with "switch to ⟨name⟩" or the tray). If he asked for
-this connection **by voice**, also confirm out loud once:
+## Showing him things
 
-    /home/onadjar/projects/the-dark-eye/bridge/eye.sh speak "<name> connected."
+    eye show "<short title>" <file> [--ask]
 
-Otherwise stay silent — the register step already whispered "⟨name⟩ joined"
-on the Eye.
-
-## Answering voice
-
-- Reply with `eye.sh speak --as <name> "<text>"` (absolute path) — plain
-  spoken language written for the ear, no markdown, under 150 words.
-  `--as <name>` makes you speak with your session's own voice so Oscar can
-  tell brains apart by ear; without it you sound like the Eye itself.
-  **Voice is the answer.**
-- **Speaking while another session has his voice does NOT play.** Oscar's
-  law: a background session overwrites nothing — voice or caption. Your
-  words are parked, you appear as a waiting call by the eye, and they play
-  in your voice the moment he switches to you. So speak normally when
-  active; when backgrounded, prefer one short summary line over many.
-  Keep the terminal text tiny — one or two lines of trace at most, no
-  restating what you already said aloud. Write more in the terminal only for
-  things that must be read (code, paths, links, tables) or when Oscar asks.
-- **Never speak unprompted.** The Eye never talks unless Oscar asked
-  something. To get his attention silently:
-  `eye.sh attention <name> on "<why>"` — you join the hold queue; the eye
-  tints your color when you reach the front, and when Oscar switches to you
-  your monitor gets `EVENT: channel-open`. `eye.sh attention <name> off`
-  leaves the queue.
-- During long work, fire `eye.sh status <task-id> working "<label>"` and
-  finish with `eye.sh status <task-id> done "<label>"` — these render as
-  colored orbiters around the eye, keeping it honest about who's busy.
-
-## Showing visuals — the canvas
-
-When Oscar asks for a mockup, a graph, a page — anything visual — write it
-to a file (self-contained HTML, an image, or plain text) and push it:
-
-    /home/onadjar/projects/the-dark-eye/bridge/eye.sh show <name> "<short title>" <file> [--ask]
-
-(`-` instead of a file reads HTML from stdin.) The canvas **never opens by
-itself** — Oscar's hard rule. He gets a clickable pending mark by the eye
-and a whispered caption; he opens it by clicking the mark, saying "show me",
-or from the tray. Add `--ask` ONLY when you need his explicit decision —
-that puts approve/reject buttons on the canvas and his verdict arrives on
-your monitor as `EVENT: canvas-approved` / `EVENT: canvas-rejected`.
-Without `--ask` he just looks and dismisses (no event comes back). After
-pushing, say (or print) one short line that it's on the canvas — never nag
-him to open it.
-
-Canvas HTML is rendered in a sandboxed frame with no network access — keep
-it self-contained: inline CSS/JS, images as data: URIs.
-
-## Reference
-
-`/home/onadjar/projects/the-dark-eye/bridge/eye.sh help` lists all commands.
-Full protocol and architecture: `~/projects/the-dark-eye/RUNBOOK.md`.
+Self-contained HTML (inline CSS/JS, images as `data:` URIs — the canvas frame
+has no network), an image, or plain text; `-` reads HTML from stdin. The canvas
+**never opens by itself** — he gets a mark by the eye and looks when he wants.
+Add `--ask` only when you need his decision; the verdict comes back as an
+`EVENT:` line on your Monitor. Say one short line that it is there; never nag.
