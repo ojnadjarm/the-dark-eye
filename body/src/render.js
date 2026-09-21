@@ -16,7 +16,7 @@ function socketPath() {
 }
 
 /**
- * `{send, stop, connected}`; `onMessage` gets every line the renderer sends
+ * `{send, sendMarks, stop, connected}`; `onMessage` gets every line the renderer sends
  * (`ready`, `outputs`, `stats`).
  */
 function createRenderBridge({
@@ -31,6 +31,7 @@ function createRenderBridge({
   fs.mkdirSync(path.dirname(sock), { recursive: true, mode: 0o700 });
   fs.rmSync(sock, { force: true });
   let conn = null;
+  let lastMarks = "";
   let child = null;
   let timer = null;
   let stopped = false;
@@ -60,6 +61,7 @@ function createRenderBridge({
     c.on("error", () => {});
     c.on("close", () => {
       if (conn === c) conn = null;
+      lastMarks = "";
     });
   });
   let listening = false;
@@ -89,6 +91,13 @@ function createRenderBridge({
   return {
     send(msg) {
       conn?.write(`${JSON.stringify(msg)}\n`);
+    },
+    /** The marks row, only when it differs from the one the renderer holds. */
+    sendMarks(msg) {
+      const line = JSON.stringify(msg);
+      if (!conn || line === lastMarks) return;
+      lastMarks = line;
+      conn.write(`${line}\n`);
     },
     get connected() {
       return conn !== null;

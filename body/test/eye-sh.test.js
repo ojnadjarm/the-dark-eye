@@ -63,13 +63,14 @@ const sent = () => JSON.parse(seen[0].body);
 test("help lists the verbs and exits 0", async () => {
   const r = await run(["help"]);
   assert.equal(r.status, 0, r.stderr);
-  for (const v of ["speak", "listen", "listen-loop", "mic", "status", "show", "tv", "health"])
+  for (const v of ["speak", "listen", "listen-loop", "mic", "status", "show", "tv", "health", "brains", "talk-to", "notes", "mode", "quiet"])
     assert.match(r.stdout, new RegExp(`\\b${v}\\b`), r.stderr);
+  assert.match(r.stdout, /--as <brain>/);
 });
 
 test("no dropped verbs survive", async () => {
   const src = fs.readFileSync(EYE, "utf8");
-  for (const gone of ["field", "register", "introduce", "attention", "active", "sessions", "cloak"])
+  for (const gone of ["field", "register", "introduce", "attention", "sessions", "cloak"])
     assert.equal(src.includes(gone), false, gone);
 });
 
@@ -311,4 +312,209 @@ test("listen-loop prints both kinds of line and survives the bridge dying", asyn
   assert.match(out, /EVENT: channel-open/);
   assert.match(out, /EYE OFFLINE/);
   assert.equal(out.includes("— "), false, "an empty detail adds no dash");
+});
+
+test("listen --as and EYE_BRAIN send the brain, neither sends none", async () => {
+  replies = ['{"transcript":null}'];
+  await run(["listen", "--as", "notes", "100"]);
+  assert.equal(seen[0].url, "/bridge/listen?timeoutMs=100&brain=notes");
+  seen = [];
+  replies = ['{"transcript":null}'];
+  await run(["listen", "100"], { env: { ...env, EYE_BRAIN: "notes" } });
+  assert.equal(seen[0].url, "/bridge/listen?timeoutMs=100&brain=notes");
+  seen = [];
+  replies = ['{"transcript":null}'];
+  await run(["listen", "100"]);
+  assert.equal(seen[0].url, "/bridge/listen?timeoutMs=100");
+});
+
+test("--as wins over EYE_BRAIN", async () => {
+  replies = ['{"transcript":null}'];
+  await run(["listen", "100", "--as", "main"], { env: { ...env, EYE_BRAIN: "notes" } });
+  assert.equal(seen[0].url, "/bridge/listen?timeoutMs=100&brain=main");
+});
+
+test("speak --as sends the brain, and combines with --to", async () => {
+  await run(["speak", "--as", "notes", "hi"]);
+  assert.deepEqual(sent(), { text: "hi", brain: "notes" });
+  seen = [];
+  await run(["speak", "hi", "--as", "notes", "--to", "remote"]);
+  assert.deepEqual(sent(), { text: "hi", to: "remote", brain: "notes" });
+});
+
+test("a bad brain name is refused before any request", async () => {
+  for (const bad of ["Notes!", "a-name-that-is-too-long", ""])
+    assert.notEqual((await run(["speak", "hi", "--as", bad])).status, 0, bad);
+  assert.notEqual((await run(["listen", "100"], { env: { ...env, EYE_BRAIN: "Bad" } })).status, 0);
+  assert.equal(seen.length, 0);
+});
+
+test("brains prints the roster", async () => {
+  replies = ['{"ok":true,"active":"main","brains":[{"name":"main","connected":true,"parked":0}]}'];
+  const r = await run(["brains"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(seen[0].method, "GET");
+  assert.equal(seen[0].url, "/bridge/brains");
+  assert.match(r.stdout, /"active":"main"/);
+});
+
+test("talk-to posts the name and prints the roster", async () => {
+  replies = ['{"ok":true,"active":"notes","brains":[]}'];
+  const r = await run(["talk-to", "notes"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(seen[0].method, "POST");
+  assert.equal(seen[0].url, "/bridge/brains/active");
+  assert.deepEqual(sent(), { brain: "notes" });
+  assert.match(r.stdout, /"active":"notes"/);
+});
+
+test("talk-to without a name is usage, exit 1", async () => {
+  const r = await run(["talk-to"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /usage: eye talk-to/);
+  assert.equal(seen.length, 0);
+});
+
+test("mode: no argument is the GET, call and notes post it", async () => {
+  replies = ['{"ok":true,"mode":"call"}', '{"ok":true,"mode":"notes"}', '{"ok":true,"mode":"call"}'];
+  const r = await run(["mode"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"mode":"call"/);
+  assert.deepEqual(seen.map((x) => [x.method, x.url]), [["GET", "/bridge/mode"]]);
+  seen = [];
+  assert.match((await run(["mode", "notes"])).stdout, /"mode":"notes"/);
+  assert.match((await run(["mode", "call"])).stdout, /"mode":"call"/);
+  assert.deepEqual(seen.map((x) => [x.method, x.url, x.body]), [
+    ["POST", "/bridge/mode", '{"mode": "notes"}'],
+    ["POST", "/bridge/mode", '{"mode": "call"}'],
+  ]);
+});
+
+test("mode with a bad argument is usage, exit 1", async () => {
+  const r = await run(["mode", "quiet"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /usage: eye mode/);
+  assert.equal(seen.length, 0);
+});
+
+test("quiet stays the alias: status is the GET (no argument too), on and off post the boolean", async () => {
+  replies = ['{"ok":true,"on":false}', '{"ok":true,"on":false}', '{"ok":true,"on":true}', '{"ok":true,"on":false}'];
+  for (const args of [["quiet"], ["quiet", "status"]]) {
+    const r = await run(args);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /"on":false/);
+  }
+  assert.deepEqual(seen.map((s) => [s.method, s.url]), [["GET", "/bridge/quiet"], ["GET", "/bridge/quiet"]]);
+  seen = [];
+  assert.match((await run(["quiet", "on"])).stdout, /"on":true/);
+  assert.match((await run(["quiet", "off"])).stdout, /"on":false/);
+  assert.deepEqual(seen.map((s) => [s.method, s.url, s.body]), [
+    ["POST", "/bridge/quiet", '{"on":true}'],
+    ["POST", "/bridge/quiet", '{"on":false}'],
+  ]);
+});
+
+test("quiet with a bad argument is usage, exit 1", async () => {
+  const r = await run(["quiet", "please"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /usage: eye quiet/);
+  assert.equal(seen.length, 0);
+});
+
+test("SKILL.md never passes a bare $EYE_BRAIN to --as (unset would kill the Monitor)", () => {
+  const skill = fs.readFileSync(path.join(__dirname, "..", "..", "bridge", "SKILL.md"), "utf8");
+  assert.equal(skill.match(/--as \$EYE_BRAIN\b/), null);
+  assert.ok(skill.includes("--as ${EYE_BRAIN:-main}"));
+});
+
+test("--as with an empty brain fails instead of listening as nobody", async () => {
+  const r = await run(["listen", "100", "--as", ""]);
+  assert.notEqual(r.status, 0);
+  assert.equal(seen.length, 0);
+});
+
+// eye notes: a fixture vault under a fake $HOME, never the real ~/obsidian-vault
+const day = (back) => {
+  const d = new Date();
+  d.setDate(d.getDate() - back);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+function vault(root, days, ideas = {}) {
+  const daily = path.join(root, "audio notes");
+  fs.mkdirSync(path.join(daily, "ideas"), { recursive: true });
+  for (const d of days) fs.writeFileSync(path.join(daily, `${day(d)}.md`), `# ${day(d)}\n\n## Raw\n\n- 10:00 — words of day ${d}\n\n## Refined\n`);
+  for (const [name, text] of Object.entries(ideas)) fs.writeFileSync(path.join(daily, "ideas", `${name}.md`), text);
+  return root;
+}
+const notesEnv = (home, extra = {}) => ({ ...env, HOME: home, DARK_EYE_CONFIG: "/nonexistent/config.json", ...extra });
+
+test("notes prints today, --since walks the days in order and skips missing ones", async () => {
+  const home = fs.mkdtempSync(path.join(dir, "home-"));
+  const e = notesEnv(home, { NOTES_VAULT_DIR: vault(path.join(home, "v"), [13, 5, 1, 0]), NOTES_FOLDER: "audio notes" });
+  let r = await run(["notes"], { env: e });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /words of day 0/);
+  assert.doesNotMatch(r.stdout, /words of day 1/);
+  r = await run(["notes", "--since", "yesterday"], { env: e });
+  assert.match(r.stdout, /words of day 1[\s\S]*words of day 0/);
+  assert.doesNotMatch(r.stdout, /words of day 5/);
+  r = await run(["notes", "--since", day(13)], { env: e });
+  assert.match(r.stdout, /day 13[\s\S]*day 5[\s\S]*day 1[\s\S]*day 0/);
+  assert.equal((r.stdout.match(/^# \d{4}-/gm) || []).length, 4);
+});
+
+test("notes on an empty range says so plainly, exit 0; a bad --since is refused", async () => {
+  const home = fs.mkdtempSync(path.join(dir, "home-"));
+  const e = notesEnv(home, { NOTES_VAULT_DIR: vault(path.join(home, "v"), [3]) });
+  const r = await run(["notes", "--since", "yesterday"], { env: e });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), `no notes since ${day(1)} in ${path.join(home, "v", "audio notes")}`);
+  assert.notEqual((await run(["notes", "--since", "soon"], { env: e })).status, 0);
+  assert.notEqual((await run(["notes", "--later"], { env: e })).status, 0);
+});
+
+test("notes --grep adds the vault files whose title, tags or headings match, path first", async () => {
+  const home = fs.mkdtempSync(path.join(dir, "home-"));
+  const ideas = {
+    "kitchen-lamp": "---\ntags: [home, lamp]\n---\n# Kitchen light\n\nwarm\n",
+    "eye-brains": "# Eye brains\n\n## Switch UX\nchips\n",
+    "listy": "---\ntags:\n  - garden\n---\n# Beds\n",
+  };
+  const e = notesEnv(home, { NOTES_VAULT_DIR: vault(path.join(home, "v"), [0], ideas) });
+  let r = await run(["notes", "--grep", "lamp"], { env: e });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /words of day 0[\s\S]*--- audio notes\/ideas\/kitchen-lamp\.md\n---\ntags: \[home, lamp\]/);
+  assert.doesNotMatch(r.stdout, /Eye brains/);
+  r = await run(["notes", "--grep", "SWITCH"], { env: e });
+  assert.match(r.stdout, /--- audio notes\/ideas\/eye-brains\.md\n# Eye brains/);
+  r = await run(["notes", "--grep", "garden"], { env: e });
+  assert.match(r.stdout, /--- audio notes\/ideas\/listy\.md/);
+  r = await run(["notes", "--grep", "warm"], { env: e });
+  assert.doesNotMatch(r.stdout, /---/, "a body-only hit is not a match");
+  assert.match(r.stdout, /words of day 0/);
+});
+
+test("notes resolves env, then agent.env, then ~/obsidian-vault, and refuses a vault outside $HOME", async () => {
+  const home = fs.mkdtempSync(path.join(dir, "home-"));
+  vault(path.join(home, "obsidian-vault"), [0]);
+  fs.mkdirSync(path.join(home, "agents", "notes"), { recursive: true });
+  fs.writeFileSync(path.join(home, "agents", "notes", "agent.env"), 'NOTES_VAULT_DIR=$HOME/from-env\nNOTES_FOLDER="audio notes"\n');
+  fs.mkdirSync(path.join(home, "from-env", "audio notes"), { recursive: true });
+  fs.writeFileSync(path.join(home, "from-env", "audio notes", `${day(0)}.md`), "# x\n\nfrom agent.env\n");
+  fs.mkdirSync(path.join(home, "explicit", "logs"), { recursive: true });
+  fs.writeFileSync(path.join(home, "explicit", "logs", `${day(0)}.md`), "# x\n\nfrom the environment\n");
+
+  let r = await run(["notes"], { env: notesEnv(home, { NOTES_VAULT_DIR: path.join(home, "explicit"), NOTES_FOLDER: "logs" }) });
+  assert.match(r.stdout, /from the environment/);
+  r = await run(["notes"], { env: notesEnv(home) });
+  assert.match(r.stdout, /from agent\.env/);
+  fs.rmSync(path.join(home, "agents"), { recursive: true });
+  r = await run(["notes"], { env: notesEnv(home) });
+  assert.match(r.stdout, /words of day 0/);
+
+  const outside = vault(fs.mkdtempSync(path.join(dir, "outside-")), [0]);
+  r = await run(["notes"], { env: notesEnv(home, { NOTES_VAULT_DIR: outside }) });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /outside/);
+  assert.equal(r.stdout, "");
 });

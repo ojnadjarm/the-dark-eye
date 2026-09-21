@@ -7,14 +7,19 @@ die() { echo "eye: $*" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-usage: eye <command> [args]
+usage: eye <command> [args] [--as <brain>]
 
+  --as <brain> (or EYE_BRAIN=<brain>)   which brain speaks/listens; none = main.
+                                    speak from a brain that is not active is parked
+                                    and heard when he switches to it
   speak <text...> [--voice <sid>] [--to local|remote|both]
                                     say it out loud (+ caption); sid = Kokoro voice;
                                     --to picks the channel, default = where he last spoke
   listen [timeoutMs]                one long-poll; prints "VOICE: ...", "VOICE [remote]: ..."
                                     or "EVENT: ..."
   listen-loop                       poll forever; also "EYE OFFLINE" / "EYE BACK"
+  brains                            the roster: who is active, connected, parked words
+  talk-to <brain>                   switch his voice to that brain; prints the roster
   mic [on|off]                      open/close his mic (no argument = toggle)
   status <id> <working|done|error> <label...>   orbiter around the eye
   status                            list the orbiters the body is holding
@@ -24,8 +29,20 @@ usage: eye <command> [args]
                                     need his approve/reject verdict
   tv [off|on|auto]                  his own switch over the TV watch: off keeps the eye
                                     dark (0 fps) until on/auto; no argument prints it
+  mode [call|notes]                 how the exchange runs, whichever channel is active:
+                                    call = a reply plays as it arrives; notes = audio notes
+                                    mode, every reply waits as text until he plays it (the
+                                    page's play triangle, or "talk to me"); no argument
+                                    prints it
+  quiet [on|off|status]             the old name of audio notes mode: on = notes,
+                                    off = call; no argument = status
   health                            is the body up, is he listening, is the mic open,
-                                    and the tv override
+                                    the mode, and the tv override
+  notes [--since <date>|--today] [--grep <word>]
+                                    his notes read back from the vault (no bridge):
+                                    the daily logs from --since (ISO date, yesterday,
+                                    today = default) to today; --grep adds the vault
+                                    files whose title, tags or headings match
 EOF
   exit "${1:-0}"
 }
@@ -33,6 +50,79 @@ EOF
 cmd=${1:-help}
 shift || true
 case "$cmd" in help|-h|--help) usage 0 ;; esac
+
+BRAIN=${EYE_BRAIN:-}
+args=()
+while [ $# -gt 0 ]; do
+  if [ "$1" = --as ]; then BRAIN=${2:?usage: eye <command> --as <brain>}; shift 2
+  else args+=("$1"); shift; fi
+done
+set -- "${args[@]}"
+[ -z "$BRAIN" ] || [[ "$BRAIN" =~ ^[a-z0-9-]{1,16}$ ]] || die "brain name must be [a-z0-9-]{1,16}, got '$BRAIN'"
+
+if [ "$cmd" = notes ]; then
+  # the vault is owner data: read-only, inside $HOME, never through the bridge
+  python3 - "$@" <<'PYEOF'
+import datetime, os, re, sys
+
+def usage():
+    sys.exit("usage: eye notes [--since <date>|--today] [--grep <word>]")
+
+since, word, args = "today", None, sys.argv[1:]
+while args:
+    a = args.pop(0)
+    if a == "--since" and args: since = args.pop(0)
+    elif a == "--today": since = "today"
+    elif a == "--grep" and args: word = args.pop(0)
+    else: usage()
+
+env = dict(os.environ)
+try:
+    for line in open(os.path.expanduser("~/agents/notes/agent.env")):
+        k, _, v = line.strip().partition("=")
+        if k and not k.startswith("#"):
+            env.setdefault(k, os.path.expandvars(v.strip().strip("'\"")))
+except OSError:
+    pass
+vault = os.path.realpath(os.path.expanduser(env.get("NOTES_VAULT_DIR") or "~/obsidian-vault"))
+folder = env.get("NOTES_FOLDER") or "audio notes"
+home = os.path.realpath(os.path.expanduser("~"))
+if vault != home and not vault.startswith(home + os.sep):
+    sys.exit(f"eye notes: vault {vault} is outside {home} — refused")
+
+today = datetime.date.today()
+try:
+    start = {"today": today, "yesterday": today - datetime.timedelta(days=1)}.get(since) \
+        or datetime.date.fromisoformat(since)
+except ValueError:
+    sys.exit(f"eye notes: --since wants an ISO date, today or yesterday, got '{since}'")
+
+daily = os.path.join(vault, folder)
+logs = [f"{start + datetime.timedelta(days=i)}.md" for i in range((today - start).days + 1)]
+found = [f for f in logs if os.path.isfile(os.path.join(daily, f))]
+if not found:
+    print(f"no notes since {start} in {daily}")
+for f in found:
+    print(open(os.path.join(daily, f)).read().rstrip("\n"), end="\n\n")
+
+if word:
+    pat = re.compile(re.escape(word), re.I)
+    for root, dirs, files in os.walk(vault):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            if not name.endswith(".md") or (root == daily and re.match(r"^\d{4}-\d{2}-\d{2}\.md$", name)):
+                continue
+            text = open(path).read()
+            fm = text[4:text.find("\n---\n", 4)] if text.startswith("---\n") and "\n---\n" in text[4:] else ""
+            tags = re.search(r"^tags:.*$((?:\n[ \t]*-.*)*)", fm, re.M)
+            heads = [tags.group(0) if tags else ""] + re.findall(r"^#+\s.*$", text, re.M)
+            if any(pat.search(x) for x in heads):
+                print(f"--- {os.path.relpath(path, vault)}")
+                print(text.rstrip("\n"), end="\n\n")
+PYEOF
+  exit 0
+fi
 
 CONFIG="${DARK_EYE_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/dark-eye/config.json}"
 [ -r "$CONFIG" ] || die "config not readable: $CONFIG (is the body installed?)"
@@ -68,9 +158,11 @@ for k, v in zip(keys, sys.argv[2:]):
 print(json.dumps(out))' "$@"
 }
 
-extract_line() { # payload → one "VOICE: ..." or "EVENT: ..." line (or nothing)
+extract_line() { # payload → "VOICE: ..." / "EVENT: ..." lines (or nothing)
+  # A long transcript goes out as several lines of at most EYE_LINE_MAX chars,
+  # split on words: the reader (Claude Code's Monitor) truncates one line past ~500.
   python3 -c '
-import sys, json
+import sys, json, textwrap
 try:
     d = json.load(sys.stdin)
 except Exception:
@@ -78,10 +170,14 @@ except Exception:
 t, e = d.get("transcript"), d.get("event")
 if t:
     tag = " [remote]" if d.get("source") == "remote" else ""
-    print("VOICE" + tag + ": " + t)
+    width = int(sys.argv[1])
+    parts = textwrap.wrap(t, width, break_long_words=True, break_on_hyphens=False) or [t]
+    print("VOICE" + tag + ": " + parts[0])
+    for p in parts[1:]:
+        print("VOICE" + tag + " (cont): " + p)
 elif e:
     detail = d.get("detail") or ""
-    print("EVENT: " + e + (" — " + detail if detail else ""))'
+    print("EVENT: " + e + (" — " + detail if detail else ""))' "${EYE_LINE_MAX:-300}"
 }
 
 case "$cmd" in
@@ -99,23 +195,22 @@ case "$cmd" in
       else text+=("$1"); shift; fi
     done
     [ ${#text[@]} -gt 0 ] || die "usage: eye speak <text...> [--voice <sid>] [--to local|remote|both]"
-    EYE_CURL_TIMEOUT=30 api POST /bridge/speak "$(jbody text,voice,to "${text[*]}" "$sid" "$to")"
+    EYE_CURL_TIMEOUT=30 api POST /bridge/speak "$(jbody text,voice,to,brain "${text[*]}" "$sid" "$to" "$BRAIN")"
     echo ;;
   listen)
     t=${1:-50000}
     [[ "$t" =~ ^[0-9]+$ ]] || die "timeoutMs must be a number, got '$t'"
-    EYE_CURL_TIMEOUT=$(( t / 1000 + 10 )) api GET "/bridge/listen?timeoutMs=$t" | extract_line ;;
+    EYE_CURL_TIMEOUT=$(( t / 1000 + 10 )) api GET "/bridge/listen?timeoutMs=$t${BRAIN:+&brain=$BRAIN}" | extract_line ;;
   listen-loop)
     # a brain's ear: it must survive anything — resets mid-restart, python hiccups.
     set +e
     trap 'echo "LISTEN-LOOP DIED: rc=$? last=$BASH_COMMAND"' EXIT
     state=up
     while true; do
-      r=$(EYE_CURL_TIMEOUT=60 api GET "/bridge/listen?timeoutMs=50000" 2>/dev/null || true)
+      r=$(EYE_CURL_TIMEOUT=60 api GET "/bridge/listen?timeoutMs=50000${BRAIN:+&brain=$BRAIN}" 2>/dev/null || true)
       if [ -n "$r" ]; then
         [ "$state" = down ] && { echo "EYE BACK (bridge reachable again)"; state=up; }
-        line=$(printf '%s' "$r" | extract_line)
-        [ -n "$line" ] && echo "$line"
+        printf '%s' "$r" | extract_line
       else
         [ "$state" = up ] && { echo "EYE OFFLINE (bridge unreachable)"; state=down; }
         sleep 5
@@ -177,6 +272,28 @@ PYEOF
       off|on|auto) api POST /bridge/tv "$(jbody mode "$1")" ;;
       *) die "usage: eye tv [off|on|auto]" ;;
     esac
+    echo ;;
+  mode)
+    case "${1:-}" in
+      "") api GET /bridge/mode ;;
+      call|notes) api POST /bridge/mode "$(jbody mode "$1")" ;;
+      *) die "usage: eye mode [call|notes]" ;;
+    esac
+    echo ;;
+  quiet)
+    case "${1:-status}" in
+      status) api GET /bridge/quiet ;;
+      on) api POST /bridge/quiet '{"on":true}' ;;
+      off) api POST /bridge/quiet '{"on":false}' ;;
+      *) die "usage: eye quiet [on|off|status]" ;;
+    esac
+    echo ;;
+  brains)
+    api GET /bridge/brains
+    echo ;;
+  talk-to)
+    [ $# -eq 1 ] || die "usage: eye talk-to <brain>"
+    api POST /bridge/brains/active "$(jbody brain "$1")"
     echo ;;
   health)
     api GET /bridge/health

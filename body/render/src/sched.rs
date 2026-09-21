@@ -79,6 +79,53 @@ pub enum Msg {
     Ptt { on: bool },
     Heard { text: String },
     Display { on: bool },
+    /// what waits under the eye — held replies, unopened visuals — and the mode
+    Marks {
+        items: Vec<Mark>,
+        #[serde(default, deserialize_with = "de_mode")]
+        mode: Mode,
+    },
+}
+
+/// Six waiting things in audio notes mode: the row under the eye at its
+/// fullest, the line the `marks` scene and the parity harness both feed in.
+pub const MARKS_LINE: &str = r##"{"type":"marks","items":[{"color":"#4dd9ff","kind":"held"},{"color":"#b04dff","kind":"held"},{"color":"#ffd166","kind":"held"},{"color":"#ff3b4d","kind":"held"},{"color":"#4dffa0","kind":"show"},{"color":"#4dffa0","kind":"show"}],"mode":"async"}"##;
+
+/// How the exchange runs: `call` speaks a reply on arrival, `async` leaves it
+/// waiting for his `▶`. Anything else on the wire is `call` — a sender that
+/// predates the mode, or a value this build does not know, draws no ring.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Call,
+    Async,
+}
+
+impl Mode {
+    pub fn from_name(s: &str) -> Self {
+        if s.eq_ignore_ascii_case("async") {
+            Mode::Async
+        } else {
+            Mode::Call
+        }
+    }
+}
+
+/// One waiting thing: the colour it is drawn in and what it is (`held`, `show`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Mark {
+    pub color: String,
+    #[serde(default)]
+    pub kind: String,
+}
+
+/// `mode`: absent, null, a number or an unknown word is `call` — a malformed
+/// field is ignored, never a dropped row and never a panic.
+fn de_mode<'de, D: Deserializer<'de>>(d: D) -> Result<Mode, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?
+        .as_ref()
+        .and_then(|v| v.as_str())
+        .map_or(Mode::Call, Mode::from_name))
 }
 
 /// `who`: absent, null or anything but `owner` is the Eye — an older sender
@@ -104,6 +151,8 @@ pub struct State {
     pub heard: Option<String>,
     pub orbiters: Orbiters,
     pub ptt: bool,
+    pub marks: Vec<Mark>,
+    pub mode: Mode,
     /// frames a second while nothing is happening
     pub idle_fps: u64,
     pub display_on: bool,
@@ -156,6 +205,10 @@ impl State {
                 self.heard = Some(text);
             }
             Msg::Display { on } => self.display_on = on,
+            Msg::Marks { items, mode } => {
+                self.marks = items;
+                self.mode = mode;
+            }
         }
     }
 
@@ -251,7 +304,11 @@ mod tests {
             parse_line(r#"{"type":"speak","text":"hola","append":true,"ms":800}"#),
             Some(Msg::Speak { text: "hola".into(), append: true, ms: Some(800), who: Voice::Eye })
         );
-        for bad in ["", "  ", "not json", r#"{"type":"dock"}"#, r#"{"type":"ptt"}"#] {
+        assert_eq!(
+            parse_line(r##"{"type":"marks","items":[{"color":"#4dd9ff","kind":"held"}],"mode":"async"}"##),
+            Some(Msg::Marks { items: vec![Mark { color: "#4dd9ff".into(), kind: "held".into() }], mode: Mode::Async })
+        );
+        for bad in ["", "  ", "not json", r#"{"type":"dock"}"#, r#"{"type":"ptt"}"#, r#"{"type":"marks","items":[{"kind":"held"}]}"#] {
             assert_eq!(parse_line(bad), None, "{bad}");
         }
     }
@@ -276,6 +333,29 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    /// The row carries the mode, and a mode this build cannot read must cost
+    /// him the ring, never the row: `async` is the body's own word for audio
+    /// notes mode and the only one the socket carries.
+    #[test]
+    fn a_marks_row_carries_the_mode_and_survives_a_mode_it_cannot_read() {
+        let one = |mode| Some(Msg::Marks { items: vec![Mark { color: "#4dd9ff".into(), kind: "held".into() }], mode });
+        let line = |m: &str| format!(r##"{{"type":"marks","items":[{{"color":"#4dd9ff","kind":"held"}}],{m}}}"##);
+        assert_eq!(parse_line(&line(r#""mode":"async""#)), one(Mode::Async));
+        for m in [
+            r#""mode":"call""#,
+            r#""mode":"notes""#, // his word, not the body's — the bridge translates at its edge
+            r#""mode":"whatever""#,
+            r#""mode":null"#,
+            r#""mode":5"#,
+            r#""mode":{}"#,
+            r#""nothing":0"#,
+        ] {
+            assert_eq!(parse_line(&line(m)), one(Mode::Call), "{m}");
+        }
+        assert_eq!(Mode::default(), Mode::Call);
+        assert_eq!(Mode::from_name("ASYNC"), Mode::Async, "the word, whatever its case");
     }
 
     /// His caption lives the same life as the Eye's, but it must not open the
@@ -310,6 +390,9 @@ mod tests {
         assert!(!s.busy(11_000), "a working orbiter draws at the idle rate");
         s.apply(Msg::Status { id: "x".into(), state: "done".into(), label: String::new() }, 20_000);
         assert!(s.busy(21_000) && !s.busy(21_700));
+        s.apply(Msg::Marks { items: vec![Mark { color: "#4dd9ff".into(), kind: "held".into() }], mode: Mode::Async }, 30_000);
+        assert!(!s.busy(30_000), "marks are a static draw, never the busy rate");
+        assert_eq!((s.marks.len(), s.mode), (1, Mode::Async));
     }
 
     #[test]

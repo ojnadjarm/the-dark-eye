@@ -6,8 +6,8 @@
  * Nothing here touches the local mic or the TV caption: a turn from the phone
  * is not in the room.
  */
-/** 3 MB of Int16 at 16 kHz — ~94 s, the same clip the upload route caps. */
-const MAX_SAMPLES = 1_500_000;
+/** 10 MB of Int16 at 16 kHz — ~312 s, the one cap a turn has; the upload route takes it too. */
+const MAX_SAMPLES = 5_000_000;
 /** A stream nobody finalised: the page left, the tunnel died. */
 const IDLE_MS = 120_000;
 const FIRST = 1 << 16;

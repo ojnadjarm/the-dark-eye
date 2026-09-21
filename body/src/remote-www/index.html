@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <title>The Dark Eye</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23030604'/%3E%3Cellipse cx='16' cy='16' rx='13' ry='6' fill='none' stroke='%234dffa0' stroke-width='1.5'/%3E%3Cellipse cx='16' cy='16' rx='3' ry='5' fill='%23b04dff'/%3E%3C/svg%3E">
+<link id="fav" rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23030604'/%3E%3Cellipse cx='16' cy='16' rx='13' ry='6' fill='none' stroke='%234dffa0' stroke-width='1.5'/%3E%3Cellipse cx='16' cy='16' rx='3' ry='5' fill='%23b04dff'/%3E%3C/svg%3E">
 <style>
   /* the TV's own palette: phosphor green is the Eye, gold is him, violet is the iris */
   :root {
@@ -102,9 +102,308 @@
     background: transparent; border: 1px solid var(--edge); border-radius: 3px;
     color: var(--green); font: inherit; font-size: 12px; cursor: pointer;
   }
+  /* hear that one: it is on a line only while something of that reply is unheard,
+     so it always reads as a full tray and never as anything held back */
+  .line button.play {
+    position: relative;
+    display: inline-grid; place-items: center; vertical-align: -3px;
+    width: 22px; height: 18px; margin: 0 0 0 6px; padding: 0;
+    background: none; border: 0; border-radius: 3px;
+    color: var(--accent, var(--green)); cursor: pointer;
+    filter: drop-shadow(0 0 5px var(--accent, var(--green)));
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* the thumb's share of it: a 44 px target around the same 22x18 picture */
+  .line button.play::after {
+    content: "";
+    position: absolute; top: 50%; left: 50%;
+    width: 44px; height: 44px;
+    transform: translate(-50%, -50%);
+  }
+  .line button.play:first-child { margin-left: 0; } /* a held reply is the glyph alone, no words beside it */
+  .line button.play svg { width: 10px; height: 11px; fill: currentColor; stroke: none; }
+  .line button.play:disabled { opacity: 0.4; cursor: default; }
+  /* its voice is still being made: no press to make yet, so a dim dot holds the glyph's
+     own box — it breathes slowly to say it is working, and the ▶ arrives in its place */
+  .line span.wait {
+    display: inline-grid; place-items: center; vertical-align: -3px;
+    width: 22px; height: 18px; margin: 0 0 0 6px;
+    color: var(--accent, var(--green)); opacity: 0.3;
+  }
+  .line span.wait::before {
+    content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor;
+    animation: wait-breath 2.6s ease-in-out infinite;
+  }
+  .line span.wait:first-child { margin-left: 0; }
+  /* transform and opacity only: the dot's box never changes, so no line ever moves */
+  @keyframes wait-breath {
+    0%, 100% { opacity: 0.5; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .line span.wait::before { animation: none; }
+  }
+
+  /* -- the eye's caption: whose line it is, then the mode as a picture and its
+        word. No pill, no border, no fill. Tapping the channel lays the ones he
+        used last in a shallow arc under the lid; `all` is the whole roster, at
+        whatever length the body reports. ---------------------------------------- */
+  #caption {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    margin-top: 2px;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+  }
+  #caption .sep { color: var(--dim); opacity: 0.4; }
+  .word {
+    -webkit-appearance: none;
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 2px;
+    background: none;
+    border: 0;
+    font: inherit;
+    letter-spacing: inherit;
+    cursor: pointer;
+    opacity: 0.68;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .word:hover, .word:focus-visible { opacity: 1; }
+  .word:disabled { cursor: default; }
+  /* the thumb's share of a word: 44 px tall, without moving the line's rhythm */
+  .word::after { content: ""; position: absolute; top: 50%; height: 44px; transform: translateY(-50%); }
+  #chan { position: relative; color: var(--accent, var(--green)); }
+  #chan::after { left: -6px; right: -6px; }
+  /* the colour is the identity, so it is drawn, not implied by the word's ink */
+  #chan .lz { width: 7px; height: 7px; flex: none; background: currentColor; border-radius: 2px; box-shadow: 0 0 9px currentColor; }
+  /* the mode: the picture carries it, the word stays its label and keeps the hairline */
+  #mode { position: relative; color: var(--green); }
+  #mode::after { left: -8px; right: -8px; }
+  #mode .w { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+  #mode[data-mode="notes"] { color: var(--lit); opacity: 1; }
+  .mi { width: 17px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; flex: none; }
+  .mi .dot { fill: currentColor; stroke: none; }
+  #more {
+    -webkit-appearance: none;
+    appearance: none;
+    padding: 2px 4px;
+    background: none;
+    border: 0;
+    color: var(--dim);
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    cursor: pointer;
+    opacity: 0.6;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #more:hover, #more:focus-visible { opacity: 1; color: var(--lit); }
+  #more[hidden] { display: none; }
+
+  /* -- the halo: the ones he used last as two-letter marks in the eye's own
+        geometry, one tap each. Recency does the scaling, so thirty channels are
+        never thirty things on the screen. -------------------------------------- */
+  #halo {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 40px;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    gap: clamp(4px, 3vw, 34px);
+    pointer-events: none;
+  }
+  #halo[hidden] { display: none; }
+  #halo .arcmark {
+    -webkit-appearance: none;
+    appearance: none;
+    position: relative;
+    display: grid;
+    justify-items: center;
+    gap: 3px;
+    min-width: 46px;
+    padding: 6px 2px 2px;
+    background: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    pointer-events: auto;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* the arc: the outer marks sit lower, so the row curves over the lid. Two or
+     three channels do not pretend to be an arc — they simply sit level. */
+  #halo[data-n="4"] .arcmark:nth-child(1), #halo[data-n="4"] .arcmark:nth-child(4) { transform: translateY(19px); }
+  #halo[data-n="4"] .arcmark:nth-child(2), #halo[data-n="4"] .arcmark:nth-child(3) { transform: translateY(3px); }
+  #halo[data-n="5"] .arcmark:nth-child(1), #halo[data-n="5"] .arcmark:nth-child(5) { transform: translateY(24px); }
+  #halo[data-n="5"] .arcmark:nth-child(2), #halo[data-n="5"] .arcmark:nth-child(4) { transform: translateY(7px); }
+  #halo .arcmark .mk { font-size: 13px; letter-spacing: 0.1em; opacity: 0.55; }
+  #halo .arcmark .nm {
+    max-width: 62px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    color: var(--dim);
+    opacity: 0.55;
+  }
+  /* the one that hears him: full light, and a solid hairline under its name — a
+     shape, so it does not rest on the colour alone */
+  #halo .arcmark[aria-current="true"] .mk { opacity: 1; text-shadow: 0 0 14px currentColor; }
+  #halo .arcmark[aria-current="true"] .nm {
+    color: currentColor;
+    opacity: 0.9;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  /* not listening: the mark is dimmer and its letters carry a dotted line, never
+     the solid one the active channel has */
+  #halo .arcmark[data-off="1"] .mk { opacity: 0.34; border-bottom: 1px dotted currentColor; }
+  #halo .arcmark:hover .mk, #halo .arcmark:focus-visible .mk { opacity: 0.9; }
+  /* replies it is holding for him: a dot here, the number in the index */
+  #halo .arcmark .wd {
+    position: absolute;
+    top: 1px;
+    right: 6px;
+    width: 5px;
+    height: 5px;
+    background: currentColor;
+    border-radius: 50%;
+    box-shadow: 0 0 7px currentColor;
+  }
+  #halo .arcmark::after {
+    content: "";
+    position: absolute; top: 50%; left: 50%;
+    width: 46px; height: 44px;
+    transform: translate(-50%, -50%);
+  }
+
+  /* -- the index: everything the body reports, at any roster size. It rises out
+        of the transcript ABOVE the eye and never over it. --------------------- */
+  #all {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0; right: 0;
+    margin: 0 auto;
+    width: min(100%, 356px);
+    max-height: min(52vh, 420px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    display: grid;
+    gap: 2px;
+    padding: 12px;
+    background: #040806;
+    border-radius: 14px;
+    box-shadow: 0 0 46px 20px rgba(3, 6, 4, 0.95);
+    text-align: left;
+  }
+  #all[hidden] { display: none !important; }
+  #all .ent {
+    -webkit-appearance: none;
+    appearance: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 4px;
+    background: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    text-align: left;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #all .ent .lz { width: 6px; height: 6px; flex: none; background: currentColor; border-radius: 2px; }
+  /* not listening: a hollow mark, so the row reads as absent without its colour */
+  #all .ent[data-off="1"] .lz { background: none; box-shadow: inset 0 0 0 1px currentColor; }
+  #all .ent .nm { color: var(--lit); opacity: 0.55; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #all .ent[aria-current="true"] .nm {
+    color: currentColor;
+    opacity: 1;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  #all .ent:hover .nm, #all .ent:focus-visible .nm { opacity: 0.85; }
+  #all .ent .mt {
+    flex: none;
+    margin-left: auto;
+    padding-left: 8px;
+    color: var(--dim);
+    font-size: 10.5px;
+    letter-spacing: 0.06em;
+    text-align: right;
+  }
+
+  /* -- motion, only where he acts: the two tiers opening and closing, the mode
+        changing, the channel settling. Opacity and transform only, ease-in-out,
+        nothing running when he is idle. --------------------------------------- */
+  #halo, #all {
+    opacity: 1;
+    transition: opacity 220ms ease-in-out, transform 220ms ease-in-out, display 220ms allow-discrete;
+  }
+  #halo[hidden] { opacity: 0; transform: translateY(-6px); }
+  #all[hidden] { opacity: 0; transform: translateY(8px); }
+  @starting-style {
+    #halo:not([hidden]) { opacity: 0; transform: translateY(-6px); }
+    #all:not([hidden]) { opacity: 0; transform: translateY(8px); }
+  }
+  /* the caption follows the channel's colour and the mode's light rather than snapping */
+  #chan, #chan .lz, #mode { transition: color 260ms ease-in-out, opacity 260ms ease-in-out; }
+  /* the mode's picture and word are redrawn on a change: each fades in once, in place */
+  #mode .mi.in { animation: mode-in 260ms ease-in-out; }
+  #mode .w.in { animation: word-in 260ms ease-in-out; }
+  @keyframes mode-in { from { opacity: 0; transform: scale(0.82); } }
+  @keyframes word-in { from { opacity: 0; } }
+  /* the mark and the row he just moved to come up to full light once */
+  #halo .arcmark.in .mk, #halo .arcmark.in .nm, #all .ent.in .nm { animation: settle 260ms ease-in-out; }
+  @keyframes settle { from { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) {
+    #halo, #all, #chan, #chan .lz, #mode { transition: none; }
+    #halo[hidden] { transform: none; }
+    #all[hidden] { transform: none; }
+    #mode .mi.in, #mode .w.in,
+    #halo .arcmark.in .mk, #halo .arcmark.in .nm, #all .ent.in .nm { animation: none; }
+  }
+
+  /* -- keep-visible: one glyph, out of the eye's neighbourhood entirely ------- */
+  #pip {
+    -webkit-appearance: none;
+    appearance: none;
+    position: fixed;
+    top: max(10px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 24px;
+    padding: 0;
+    background: none;
+    border: 0;
+    color: var(--dim);
+    opacity: 0.45;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #pip svg { width: 18px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+  #pip svg rect.in { fill: currentColor; stroke: none; }
+  #pip:hover, #pip:focus-visible { opacity: 1; color: var(--lit); }
+  #pip[aria-pressed="true"] { opacity: 1; color: var(--accent, var(--green)); }
 
   /* -- the eye: the TV's, tapped on and tapped off ---------------------------- */
-  #talk { display: grid; justify-items: center; gap: 2px; }
+  #talk { position: relative; display: grid; justify-items: center; gap: 2px; }
   #disc {
     -webkit-appearance: none;
     appearance: none;
@@ -158,9 +457,20 @@
     <button id="disc" data-state="locked" aria-label="tap to talk, tap again to send" aria-pressed="false" disabled>
       <canvas id="eye" aria-hidden="true"></canvas>
     </button>
+    <div id="halo" role="group" aria-label="recent channels" hidden></div>
+    <div id="all" role="group" aria-label="every channel" hidden></div>
+    <div id="caption">
+      <button class="word" id="chan" type="button" aria-expanded="false" aria-label="main hears you · choose another channel"><span class="lz" aria-hidden="true"></span><span class="nm">main</span></button>
+      <span class="sep" aria-hidden="true">·</span>
+      <button class="word" id="mode" type="button" data-mode="call" aria-label="call mode · replies play as they arrive · tap for audio notes mode"><span class="w">call</span></button>
+      <button id="more" type="button" aria-expanded="false" aria-label="every channel" hidden>all</button>
+    </div>
     <div id="status" aria-live="polite"></div>
   </section>
 </main>
+<button id="pip" class="hide" type="button" aria-pressed="false" title="Keep the eye in a small window on top" aria-label="Keep the eye in a small window on top">
+  <svg viewBox="0 0 24 18" aria-hidden="true"><rect x="0.7" y="0.7" width="22.6" height="16.6" rx="2.6"/><rect class="in" x="12" y="8.6" width="9.3" height="7.3" rx="1.4"/></svg>
+</button>
 
 <script>
 "use strict";
@@ -170,8 +480,11 @@ const DESK = matchMedia("(hover: hover) and (pointer: fine)").matches;
 const STILL = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const READY = DESK ? "Tap or <kbd>space</kbd> to talk" : "Tap to talk";
 const MIN_SAMPLES = 3200; // 200 ms — a slip of the thumb is not a sentence
-const MAX_MS = 90_000; // the same failsafe the body puts on its own mic
-const FLUSH_MS = 1000; // a second of his voice per upload while he talks
+const MAX_MS = 300_000; // the failsafe: a turn may now span a tab switch, so it is long
+const FLUSH_BLOCKS = 32; // ~1 s of his voice per upload, counted off the worklet — never a timer
+const EAR_IDLE_MS = 120_000; // IDLE_MS in src/remote-ear.js: the body drops a stream idle this long
+const MUTE_GRACE_MS = 30_000; // the tap must land while the body still holds everything before the mute
+const MUTE_MAX_MS = EAR_IDLE_MS - MUTE_GRACE_MS; // never equal: a mute that outlived the buffer loses the turn
 const TAU = Math.PI * 2;
 const IDLE_FPS = 60; // the idle eye lives at the TV's own rate: breathe, drift, saccades, trail
 
@@ -226,8 +539,14 @@ function makeAtlas(tiers) {
   });
   return c;
 }
-const VIOLET_TIERS = [{ fill: "rgba(70,30,100,0.92)" }, { fill: "#b04dff" }, { fill: "#b04dff", glow: 6, glowColor: "rgba(176,77,255,0.8)" }];
-const ATLAS = { green: makeAtlas(GREEN_TIERS), gold: makeAtlas(GOLD_TIERS), violet: makeAtlas(VIOLET_TIERS) };
+/** The iris in a brain's colour: the same three tiers the violet had. */
+const rgbOf = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+const irisTiers = (hex) => {
+  const [r, g, b] = rgbOf(hex);
+  return [{ fill: `rgba(${r * 0.4 | 0},${g * 0.4 | 0},${b * 0.4 | 0},0.92)` }, { fill: hex }, { fill: hex, glow: 6, glowColor: `rgba(${r},${g},${b},0.8)` }];
+};
+const ATLAS = { green: makeAtlas(GREEN_TIERS), gold: makeAtlas(GOLD_TIERS), violet: makeAtlas(irisTiers("#b04dff")) };
+let irisRgb = "176,77,255";
 const blit = (ctx, atlas, gi, tier, x, y, size) => {
   const k = size / 13;
   ctx.drawImage(atlas, gi * CELL * AS, tier * CELL * AS, CELL * AS, CELL * AS, x - ORX * k, y - ORY * k, CELL * k, CELL * k);
@@ -268,6 +587,7 @@ const bodySpace = (ctx) => ctx.setTransform(DPR, 0, 0, DPR, -BODY.x * DPR, -BODY
 const eye = { open: 0.08, openTo: 0.08, exc: 0, excTo: 0, att: 0, attTo: 0, ring: null, kick: -9, inward: false, speaking: false, t: 0, last: 0, wipe: 0, irisRot: 0, gaze: { x: 0, y: 0, tx: 0, ty: 0, next: 0 } };
 const stats = (window.__eyeStats = { n: 0, ms: 0, max: 0 });
 let raf = 0, focused = true;
+let pip = null, host = window; // the eye's own window when he asks for one, else the tab
 
 function leafPath(ctx, open) {
   ctx.beginPath();
@@ -402,7 +722,7 @@ function paint(now) {
   };
   const mid = `${139 + 116 * eye.att | 0},${255 - 30 * eye.att | 0},${193 - 43 * eye.att | 0}`;
   if (eye.ring === "listening") ripple((t % 1.1) / 1.1, mid, 0.5);
-  if (eye.ring === "speaking") ripple(((t + 0.55) % 1.1) / 1.1, "176,77,255", 0.45);
+  if (eye.ring === "speaking") ripple(((t + 0.55) % 1.1) / 1.1, irisRgb, 0.45);
   if (t - eye.kick < 0.6) ripple((t - eye.kick) / 0.6, mid, 0.7);
 
   // the atmosphere: a handful of glyphs sinking above the eye, only while it works
@@ -427,17 +747,20 @@ const busy = () =>
   eye.excTo > 0 || eye.attTo > 0 || eye.t - eye.kick < 0.6 || drops.length > 0;
 
 /** The settled eye is not a dead one: at ready it keeps living, at IDLE_FPS. */
-const idling = () => !STILL && focused && !document.hidden && disc.dataset.state === "ready";
+/** Nothing to draw for: hidden or unfocused, and no window of its own holding the eye. */
+const away = () => (document.hidden || !focused) && !pip;
+const idling = () => !STILL && !away() && disc.dataset.state === "ready";
 
 /** One frame after another while it works or rests; nothing at all while he is away. */
 function frame(now) {
   raf = 0;
   paint(now);
   for (const d of decoders) d.step(now);
-  if ((busy() || idling()) && !document.hidden && focused) raf = requestAnimationFrame(frame);
+  if ((busy() || idling()) && !away()) raf = host.requestAnimationFrame(frame);
   else { eye.last = 0; eye.open = eye.openTo; eye.exc = eye.excTo; eye.att = eye.attTo; }
 }
-const wake = () => { if (!raf && !document.hidden && focused) raf = requestAnimationFrame(frame); };
+const wake = () => { if (!raf && !away()) raf = host.requestAnimationFrame(frame); };
+const park = () => { if (raf) { host.cancelAnimationFrame(raf); raf = 0; } };
 /** A still eye for those who asked for no motion: every state as one settled frame. */
 function still() {
   eye.open = eye.openTo; eye.exc = eye.excTo; eye.att = eye.attTo; eye.t += 0.4;
@@ -487,7 +810,8 @@ function decoder(el) {
   };
   /** Hide every character until `reveal` — a reply waits for its own voice. */
   d.hold = (text) => { d.set(text, 0, Infinity); };
-  d.reveal = (ms) => { if (!d.done && d.at[0] === Infinity) { d.text = ""; d.set(d.el.dataset.text, ms); } };
+  // also re-reveals a decode still in flight: a voice cut mid-word must not leave its words scrambling on the old clock
+  d.reveal = (ms) => { if (!d.done) { d.text = ""; d.set(d.el.dataset.text, ms); } };
   d.step = (now) => {
     const runs = [];
     let cur = null, all = true;
@@ -501,7 +825,8 @@ function decoder(el) {
       if (cur && cur.st === st) cur.s += ch;
       else runs.push((cur = { st, s: ch }));
     }
-    el.replaceChildren(...runs.map((r) => { if (!r.st) return r.s; const s = document.createElement("span"); s.className = r.st; s.textContent = r.s; return s; }));
+    const keep = [...el.children].filter((c) => c.tagName === "BUTTON"); // his ▶ outlives every decode step
+    el.replaceChildren(...runs.map((r) => { if (!r.st) return r.s; const s = document.createElement("span"); s.className = r.st; s.textContent = r.s; return s; }), ...keep);
     if (all) { d.done = true; decoders.delete(d); }
     else if (el === log.lastElementChild) log.scrollTop = log.scrollHeight;
   };
@@ -511,12 +836,18 @@ function decoder(el) {
 // -- the state ---------------------------------------------------------------
 let ctx = null, node = null, stream = null;
 let recording = false, tapId = null, failsafe = null, blocks = [], seq = 0, polling = false;
-let utt = null, outSeq = 0, streamed = 0, flushing = false, flusher = null;
+let utt = null, outSeq = 0, streamed = 0, flushing = false;
+let paused = false, mutedAt = 0; // the iPhone's mute while he is away, and the wall clock it began on
 let liveEl = null; // the gold line growing under his thumb
 let offline = false;
 const queue = []; // replies decoded and waiting their turn, one WAV at a time
-let playing = false;
+let playing = null; // the item sounding now, held so an interruption can hand it back
+let src = null; // the node sounding it: `cut()` stops this one, and only this one's end may ack
 let poll = null, thinking = null;
+let mode = "call"; // call, or audio notes — the active channel's, never a setting of the whole Eye
+let boot = null; // the body's life these seqs belong to: a restart counts the ring from 0 again
+/** The eye stops waiting on a reply — and with it the reason a hidden tab keeps polling. */
+const unbrood = () => { clearTimeout(thinking); thinking = null; };
 
 /** The eye's mood and the line under it, together: one state, one sentence. */
 const state = (name, text, warn) => {
@@ -528,8 +859,215 @@ const state = (name, text, warn) => {
   statusEl.innerHTML = text;
   statusEl.classList.toggle("warn", !!warn);
 };
-const ready = () => state("ready", READY);
+/** How many replies still have something unheard — which is what a ▶ is there for. */
+const waiting = () => log.querySelectorAll("button.play").length;
+const ready = () => {
+  const n = waiting(); // in call mode a ▶ exists only where the page could not play it
+  state("ready", n ? `${n} waiting \u00b7 \u25b6 to play` : READY);
+};
 const warn = (text) => state(null, text, true);
+
+// -- the caption: whose line it is, and how the exchange is heard ------------
+const caption = $("caption"), halo = $("halo"), all = $("all"), moreBtn = $("more");
+const chanBtn = $("chan"), modeBtn = $("mode");
+const MODE_WORD = { call: "call", notes: "audio notes" }; // his words, the only ones on the page
+const MODE_LABEL = {
+  call: "call mode · replies play as they arrive · tap for audio notes mode",
+  notes: "audio notes mode · replies wait for your ▶ · tap for call mode",
+};
+/**
+ * The mode's picture. Two positive objects, never one-minus-the-other: `call` is a
+ * dot radiating, audio notes a tray with one thing resting in it. Two strokes each,
+ * same 17x13 box, so both survive 13 px and the line's rhythm never moves.
+ */
+const MODE_ICON = {
+  call:
+    '<svg class="mi" viewBox="0 0 18 14" aria-hidden="true"><circle class="dot" cx="3.4" cy="7" r="2.1"/>' +
+    '<path d="M7.7 3.6a5 5 0 0 1 0 6.8"/><path d="M11.3 1.3a8.4 8.4 0 0 1 0 11.4"/></svg>',
+  notes:
+    '<svg class="mi" viewBox="0 0 18 14" aria-hidden="true"><path d="M2.6 6v4.4q0 1.6 1.6 1.6h9.6q1.6 0 1.6-1.6V6"/>' +
+    '<path d="M6 9.2h6"/></svg>',
+};
+const HALO_MAX = 5; // the ones he actually uses: what keeps an unbounded roster one tap away
+let chans = []; // the roster as the body lists it, at whatever length
+let chan = null; // the one that hears him
+let seen = []; // the ids in the order he last used them — the page's own recency
+let moved = false; // he just changed channel: the mark and the row settle once, then stop
+
+const post = (path, body) =>
+  fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => null);
+
+const rowOf = (name) => chans.find((c) => c.name === name) ?? null;
+/** His display name for a row: the label the body sends, the id when the row has none. */
+const nameOf = (c) => c.label || c.name;
+/** Two letters that stay readable at thirty channels: the initials, else the first two. */
+function markOf(c) {
+  const words = nameOf(c).trim().split(/[\s._·-]+/).filter(Boolean);
+  const two = words.length > 1 ? words[0][0] + words[1][0] : nameOf(c).trim().slice(0, 2);
+  return two.toUpperCase();
+}
+/** How many replies a channel is holding for him — H09's field, absent until it lands. */
+const holding = (c) => Number(c.waiting) || 0;
+/** What the index says a row is doing, in his words. */
+function note(c) {
+  const bits = [];
+  if (c.name === chan) bits.push("listening now");
+  else if (c.connected === false) bits.push("not listening");
+  if (MODE_WORD[c.mode]) bits.push(MODE_WORD[c.mode]);
+  if (holding(c)) bits.push(`${holding(c)} waiting`);
+  return bits.join(" · ");
+}
+const touch = (name) => { seen = [name, ...seen.filter((n) => n !== name)]; };
+/** The halo's list: the ones he used last, then the roster's own order, capped. */
+function recent() {
+  const rank = (n) => { const i = seen.indexOf(n); return i < 0 ? seen.length : i; };
+  return chans
+    .map((c, i) => ({ c, k: rank(c.name), i }))
+    .sort((a, b) => a.k - b.k || a.i - b.i)
+    .slice(0, HALO_MAX)
+    .map((r) => r.c);
+}
+
+/** The roster lane, as the body publishes it: the channels, the active one, its mode. */
+function roster(r) {
+  if (r.brains) {
+    chans = r.brains;
+    channel(r.active);
+    drawHalo();
+    drawAll();
+  }
+  const m = rowOf(chan)?.mode ?? r.mode; // the mode the page shows is the active channel's
+  if (m) drawMode(m);
+  moved = false;
+}
+
+/** The channel word, and with it the iris, the accent and the eye's own colour. */
+function channel(active) {
+  if (!active) return;
+  const c = rowOf(active) ?? { name: active };
+  if (active !== chan) moved = true;
+  chan = active;
+  touch(active);
+  chanBtn.querySelector(".nm").textContent = nameOf(c);
+  chanBtn.setAttribute("aria-label", `${nameOf(c)} hears you · choose another channel`);
+  const color = c.color;
+  if (!color || color === caption.dataset.color) return;
+  caption.dataset.color = color;
+  talk.style.setProperty("--accent", color); // and on #talk itself, which travels into the PiP window
+  document.documentElement.style.setProperty("--accent", color);
+  ATLAS.violet = makeAtlas(irisTiers(color));
+  irisRgb = rgbOf(color).join(",");
+  eye.kick = eye.t;
+  wake();
+}
+
+/** The mode: the active channel's, as a picture and his own word for it. */
+function drawMode(m) {
+  if (!MODE_WORD[m]) return;
+  const turned = m !== mode; // a poll that repeats the mode redraws nothing that moves
+  mode = m;
+  modeBtn.dataset.mode = m;
+  modeBtn.innerHTML = MODE_ICON[m] + '<span class="w"></span>';
+  if (turned) modeBtn.querySelectorAll(".mi, .w").forEach((e) => e.classList.add("in"));
+  modeBtn.querySelector(".w").textContent = MODE_WORD[m];
+  modeBtn.setAttribute("aria-label", MODE_LABEL[m]);
+  drawHalo();
+  drawAll();
+  if (!recording && disc.dataset.state === "ready") ready();
+}
+
+/** One mark: two letters in the channel's colour, its name under it, a dot if it holds replies. */
+function arcmark(c) {
+  const b = document.createElement("button");
+  b.className = "arcmark";
+  b.type = "button";
+  b.style.color = c.color || "";
+  b.dataset.off = c.connected === false ? "1" : "0";
+  b.innerHTML = '<span class="mk"></span><span class="nm"></span>' + (holding(c) ? '<span class="wd" aria-hidden="true"></span>' : "");
+  b.querySelector(".mk").textContent = markOf(c);
+  b.querySelector(".nm").textContent = nameOf(c);
+  b.setAttribute("aria-current", String(c.name === chan));
+  b.setAttribute("aria-label", [nameOf(c), note(c)].filter(Boolean).join(" · "));
+  if (moved && c.name === chan) b.classList.add("in");
+  b.addEventListener("click", () => { openHalo(false); pick(c.name); chanBtn.focus(); });
+  return b;
+}
+
+/** One row of the index: the same identity, with what a bare list cannot tell him. */
+function entry(c) {
+  const b = document.createElement("button");
+  b.className = "ent";
+  b.type = "button";
+  b.style.color = c.color || "";
+  b.dataset.off = c.connected === false ? "1" : "0";
+  b.innerHTML = '<span class="lz" aria-hidden="true"></span><span class="nm"></span><span class="mt"></span>';
+  b.querySelector(".nm").textContent = nameOf(c);
+  b.querySelector(".mt").textContent = note(c);
+  b.setAttribute("aria-current", String(c.name === chan));
+  b.setAttribute("aria-label", [nameOf(c), note(c)].filter(Boolean).join(" · "));
+  if (moved && c.name === chan) b.classList.add("in");
+  b.addEventListener("click", () => { openHalo(false); pick(c.name); chanBtn.focus(); });
+  return b;
+}
+
+function drawHalo() {
+  const list = recent();
+  halo.dataset.n = String(list.length);
+  halo.replaceChildren(...list.map(arcmark));
+}
+
+/** Whatever the body reports, at any roster size — no count is assumed anywhere. */
+function drawAll() {
+  all.replaceChildren(...chans.map(entry));
+}
+
+function openHalo(on) {
+  halo.hidden = !on;
+  chanBtn.setAttribute("aria-expanded", String(on));
+  moreBtn.hidden = !on;
+  if (!on) return void openAll(false);
+  drawHalo();
+  halo.querySelector('[aria-current="true"]')?.focus();
+}
+
+function openAll(on) {
+  all.hidden = !on;
+  moreBtn.setAttribute("aria-expanded", String(on));
+  if (!on) return;
+  drawAll();
+  all.querySelector('[aria-current="true"]')?.focus();
+}
+
+/** One tap: the body switches and answers the roster, which is what the caption redraws from. */
+async function pick(name) {
+  if (!name || name === chan) return;
+  chanBtn.disabled = true;
+  const r = await post("/remote/active", { brain: name }); // the id, never the label
+  chanBtn.disabled = false;
+  if (r && r.status === 401) return locked();
+  if (r && r.ok) return roster(await r.json());
+  warn("The switch did not happen · try again");
+}
+
+/** One tap on the mode: it moves the active channel and no other. */
+async function flip() {
+  const want = mode === "call" ? "notes" : "call";
+  modeBtn.disabled = true;
+  const r = await post("/remote/mode", chan ? { mode: want, channel: chan } : { mode: want });
+  modeBtn.disabled = false;
+  if (r && r.status === 401) return locked();
+  if (r && r.ok) {
+    const m = (await r.json()).mode;
+    const row = rowOf(chan);
+    if (row && MODE_WORD[m]) row.mode = m; // the index follows the channel he just moved
+    return drawMode(m);
+  }
+  warn("The mode did not change · try again");
+}
+
+chanBtn.addEventListener("click", () => openHalo(halo.hidden));
+moreBtn.addEventListener("click", () => openAll(all.hidden));
+modeBtn.addEventListener("click", flip);
 
 /** One line in the transcript, `me` gold or `eye` green, with its decoder. */
 function line(who, text, held) {
@@ -551,14 +1089,25 @@ async function enter() {
   log.classList.remove("hide");
   disc.disabled = false;
   ready();
-  const r = await fetch("/remote/cursor").catch(() => null);
-  if (r && r.ok) seq = (await r.json()).seq ?? 0;
+  const c = await life();
+  if (c) {
+    seq = c.seq ?? 0;
+    boot = c.boot ?? null;
+  }
   else try { seq = Number(sessionStorage.getItem("seq")) || 0; } catch {}
+  fetch("/remote/brains").then((b) => b.ok && b.json()).then((b) => b && roster(b)).catch(() => {});
+  fetch("/remote/mode").then((m) => m.ok && m.json()).then((m) => m && drawMode(m.mode)).catch(() => {});
   loop();
 }
 
-/** Back to the key field — the cookie is gone or the body was restarted. The eye closes. */
+/**
+ * Back to the key field — the cookie is gone or the body was restarted. The eye
+ * closes, and the turn goes with it: a 401 mid-flush used to leave `recording`
+ * true, so `begin()` refused after he logged back in and only a reload freed it.
+ */
 function locked() {
+  drop();
+  openHalo(false);
   gate.classList.remove("hide");
   log.classList.add("hide");
   disc.disabled = true;
@@ -587,49 +1136,97 @@ fetch("/remote/audio", { method: "POST", body: new Uint8Array(0) })
 
 // -- tapping the eye --------------------------------------------------------
 
-/** The context is made and resumed inside the tap — that is what buys iOS autoplay. */
-function unlock() {
-  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-  if (ctx.state !== "running") ctx.resume();
-}
-
 /** The mic, once: the stream and the worklet are kept, only the tap is switched. */
 async function openMic() {
   if (node) return;
   stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
   await ctx.audioWorklet.addModule("worklet.js");
   node = new AudioWorkletNode(ctx, "downsampler");
-  node.port.onmessage = (e) => blocks.push(e.data);
+  node.port.onmessage = (e) => {
+    blocks.push(e.data);
+    if (blocks.length >= FLUSH_BLOCKS) flush(); // a message is a task, never a clamped timer
+  };
   ctx.createMediaStreamSource(stream).connect(node);
+  const [track] = stream.getAudioTracks();
+  track.addEventListener("ended", stop);
+  // only the iPhone ever fires these: it mutes the track the moment he looks elsewhere
+  track.addEventListener("mute", () => {
+    if (!recording) return;
+    paused = true;
+    state("listening", "Mic paused by the phone · come back to continue");
+    mutedAt ||= Date.now(); // a timer would not survive the very absence this guards against; a second mute keeps the first one's clock
+  });
+  track.addEventListener("unmute", () => {
+    paused = false;
+    if (lost()) return;
+    mutedAt = 0;
+    if (recording) { state("listening", "Tap again to send"); flush(); }
+  });
   const mute = ctx.createGain(); // a worklet only runs while it reaches a destination
   mute.gain.value = 0;
   node.connect(mute).connect(ctx.destination);
 }
 
-/** Off the air: the gold goes out, the failsafe and the uploader are dropped. */
+const fav = $("fav"), TITLE = document.title;
+const ICON = fav.getAttribute("href");
+const ICON_LIVE = ICON.replace("%23b04dff", "%23ffd166"); // a gold iris, his colour
+
+/** The tab itself says a turn is open, for the turns he switched away from. */
+const mark = (live) => {
+  document.title = live ? `\u25cf listening \u00b7 ${TITLE}` : TITLE;
+  fav.setAttribute("href", live ? ICON_LIVE : ICON);
+};
+
+/** Off the air: the gold goes out, the failsafe and the mute clock are dropped. */
 function idle() {
   recording = false;
   tapId = null;
+  paused = false;
   clearTimeout(failsafe);
-  clearInterval(flusher);
+  mutedAt = 0;
+  mark(false);
   disc.setAttribute("aria-pressed", "false");
 }
 
-/** The first tap of the pair: gold eye, open mic, and 90 s on the clock. */
+/**
+ * His voice takes the page's: the reply sounding now — or the one a stopped context left
+ * paused mid-word, which opening the mic would otherwise resume out loud into it — is
+ * stopped and handed back to the head of the tray with its ▶, the way the room's barge-in
+ * drops the remainder (M08 §3). Nothing of it is acked: the next press plays it from the
+ * start, so the glyph is still there because something of it is genuinely unheard.
+ */
+function cut() {
+  if (!playing) return;
+  const s = src;
+  src = null; // its `onended` now knows he did not hear it out
+  try { s?.stop(); s?.disconnect(); } catch {}
+  queue.unshift(playing);
+  playing = null;
+  offer();
+}
+
+/** The first tap of the pair: gold eye, open mic, and the failsafe on the clock. */
 async function begin() {
   if (recording || offline) return;
-  unlock();
+  cut(); // before the mic, and before `unlock()` resumes what it was sounding
+  const opened = unlock(); // started inside the gesture; awaited with the mic below
   recording = true;
   blocks = [];
   utt = Math.random().toString(36).slice(2, 10);
   outSeq = 0;
   streamed = 0;
   liveEl = null;
-  flusher = setInterval(flush, FLUSH_MS);
-  clearTimeout(thinking);
+  unbrood();
+  mark(true);
   disc.setAttribute("aria-pressed", "true");
   state("listening", "Tap again to send");
   failsafe = setTimeout(stop, MAX_MS);
+  try {
+    await opened; // no context, no worklet: the mic cannot be opened either, and the mouth is shut too
+  } catch {
+    idle();
+    return state("ready", "This device will not open audio \u00b7 it cannot hear or speak", true);
+  }
   try {
     await openMic();
   } catch (err) {
@@ -645,7 +1242,7 @@ async function begin() {
  * body appends by number, so nothing lands out of order.
  */
 async function flush() {
-  if (flushing || !utt || !blocks.length) return;
+  if (flushing || paused || !utt || !blocks.length) return;
   flushing = true;
   const body = concat(blocks.splice(0));
   const id = utt;
@@ -668,9 +1265,31 @@ async function flush() {
   flushing = false;
 }
 
-/** The second tap — or the failsafe, or the page leaving: send what was captured. */
+/** The turn is let go: off the air, the tail discarded, the growing line removed. */
+function drop() {
+  utt = null;
+  idle();
+  unbrood();
+  node?.port.postMessage("off");
+  blocks = [];
+  liveEl?.remove();
+  liveEl = null;
+}
+
+/**
+ * A pause the body outwaited: real elapsed time, because the page the phone pauses
+ * is the page whose timers are suspended. The turn is gone, so nothing is sent.
+ */
+function lost() {
+  if (!recording || !mutedAt || Date.now() - mutedAt < MUTE_MAX_MS) return false;
+  drop();
+  state("ready", "The mic stayed paused too long · the body let that turn go · tap to say it again", true);
+  return true;
+}
+
+/** The second tap — or the failsafe, or the mic ending: send what was captured. */
 async function stop() {
-  if (!recording) return;
+  if (!recording || lost()) return;
   const id = utt;
   utt = null; // no partial after the tap: the line he has is the one that settles
   idle();
@@ -712,12 +1331,12 @@ function settle(text) {
   if (!text) {
     liveEl?.remove();
     liveEl = null;
-    return state("ready", "Nothing heard · try again, closer to the mic", true);
+    return state("ready", "Nothing came back for that turn · tap to say it again", true);
   }
   if (liveEl) { liveEl.dataset.text = text; liveEl.dec.set(text); }
   else line("me", text);
   liveEl = null;
-  thinking = setTimeout(() => state("ready", "No reply came · tap to ask again", true), 60_000); // the eye does not brood all night
+  thinking = setTimeout(() => { thinking = null; state("ready", "No reply came · tap to ask again", true); }, 60_000); // the eye does not brood all night
 }
 
 /** One tap in, one tap out — his earbuds' gesture, not a walkie-talkie's. */
@@ -748,30 +1367,92 @@ disc.addEventListener("pointerdown", toggle);
 disc.addEventListener("pointercancel", (e) => {
   if (e.pointerId !== tapId) stop();
 });
-// the space bar is the desk's thumb
-addEventListener("keydown", (e) => {
-  if (e.code !== "Space" || e.repeat || disc.disabled) return;
-  if (document.activeElement === $("key")) return;
-  toggle(e);
-});
+// the space bar is the desk's thumb, and 1..9 its finger on the channels
+function keys(e) {
+  const doc = e.target?.ownerDocument ?? document; // in its own window the disc has its own document
+  if (e.repeat || disc.disabled || doc.activeElement === $("key")) return;
+  if (e.key === "Escape") return void openHalo(false);
+  if (e.code === "Space") return toggle(e);
+  const c = DESK && /^Digit[1-9]$/.test(e.code) && chans[e.code[5] - 1];
+  if (c) pick(c.name);
+}
+addEventListener("keydown", keys); // and on the PiP window too, where the disc may be living
 
 // -- what comes back --------------------------------------------------------
+
+const CURSOR_MS = 5000; // the loop is held while this is read: an answer that never comes must end
+const MISMATCH_MS = 1000; // a life no cursor read can name: the wait before asking again
+const MISMATCH_MAX_MS = 30_000;
+let mismatchMs = MISMATCH_MS;
+
+/** The cursor, bounded, or null — `polling` is true while it is awaited. */
+const life = () => {
+  const stop = new AbortController();
+  const t = setTimeout(() => stop.abort(), CURSOR_MS);
+  return fetch("/remote/cursor", { signal: stop.signal })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null)
+    .finally(() => clearTimeout(t));
+};
+
+/**
+ * Which life of the body a cursor read names. A page whose read at login failed holds no
+ * life at all — it takes this one, from now, or restart detection would be off for as long
+ * as he leaves the page open. One it already holds and no longer recognises is a restart.
+ */
+function adopt(c) {
+  if (!c?.boot) return;
+  if (!boot) {
+    boot = c.boot;
+    seq = Number(c.seq) || 0;
+  } else if (c.boot !== boot) restarted(c);
+}
+
+/**
+ * Which life of the body these seqs belong to, read back before this page polls again:
+ * a hidden tab leaves the loop *cleanly*, so a restart under it would otherwise be met
+ * with a dead life's cursor and every reply of the new one swallowed below it.
+ */
+async function resync() {
+  adopt(await life());
+}
 
 /** One long-poll after another while the page is in front of him. */
 async function loop() {
   if (polling) return;
   polling = true;
   try {
-    while (!document.hidden) {
+    if (!offline) await resync(); // while offline the branch below is the one that reads it
+    // a turn in flight, a reply still coming or a window of its own all outlive the hide
+    while (!document.hidden || recording || thinking || pip) {
       if (offline) {
-        await fetch("/remote/cursor"); // a quick answer, not a 50 s poll, is what says the tunnel is back
+        const c = await life(); // a quick answer, not a 50 s poll, says the tunnel is back
+        if (!c) throw new Error("offline"); // the retry below is what tries again
         offline = false;
         if (!recording) ready();
+        adopt(c); // and its word to him is the one that stands
       }
       poll = new AbortController();
       const r = await fetch("/remote/poll?since=" + seq, { signal: poll.signal });
       if (r.status === 401) return locked();
+      // a restart between two polls drops an idle socket and nothing else: the next poll
+      // answers for the new life, so its life rides every answer and is read here
+      const answered = r.headers.get("X-Eye-Boot");
+      // read before any resync: the reply this very answer carries is his, whatever life it names —
+      // dropped here it never came back, because the new cursor is already past it
       const reply = await r.json();
+      if (answered && answered !== boot) {
+        const had = boot;
+        await resync(); // the cursor of the life that answered, and his line if it is a new one
+        // a read that named no life and an answer with nothing in it: no progress. Without this
+        // wait the page polls the same swallowed answer as fast as the radio allows — his battery
+        if (boot === had && !reply) {
+          await new Promise((go) => setTimeout(go, mismatchMs));
+          mismatchMs = Math.min(mismatchMs * 2, MISMATCH_MAX_MS);
+          continue;
+        }
+        mismatchMs = MISMATCH_MS;
+      }
       if (!reply) continue;
       seq = reply.seq;
       try { sessionStorage.setItem("seq", seq); } catch {}
@@ -779,10 +1460,30 @@ async function loop() {
         grow(reply.utt, reply.partial);
         continue;
       }
-      clearTimeout(thinking);
-      const el = line("eye", reply.text || "…", !!reply.audio); // with a voice, the words wait for it
-      if (reply.audio) play(reply.audio, el, reply.seq);
-      else ack(reply.seq);
+      if (reply.brains || reply.mode) {
+        roster(reply);
+        continue;
+      }
+      if (reply.ready !== undefined) {
+        nowReady(reply.ready);
+        continue;
+      }
+      unbrood();
+      // one he pressed ▶ for is played whatever the mode says; the rest play in call mode only
+      const asked = reply.audio ? claim(reply.text) : null;
+      const hear = !!reply.audio && (!!asked || mode === "call");
+      // the words wait for the voice in both modes: in call mode for the one coming, in audio
+      // notes mode for the press. A replay is the same reply, so it comes back on the pressed line.
+      const el = asked ? asked.el : line("eye", reply.text || "…", hear || mode !== "call");
+      const heard = hear && (await play(reply.audio, el, reply.seq));
+      if (asked && !heard) asked.btn.disabled = false; // it came back unplayable: the press may be tried again
+      // there only while unheard — and only once its voice exists: until then the quiet mark
+      if (!heard && !asked) {
+        if (reply.pending) waitMark(el, reply.seq);
+        else playGlyph(el, reply.seq, reply.audio, reply.text);
+      }
+      if (!reply.audio || (hear && !heard)) ack(reply.seq);
+      if (!heard && !recording) ready(); // the count follows the tray
     }
   } catch {
     if (!recording) {
@@ -795,58 +1496,234 @@ async function loop() {
   }
 }
 
-/** The reply decoded and queued: the voice waits its turn, and the words decode with it. */
+/**
+ * The one place a context is made, so there is one place that hears it stop: a voice cut off
+ * mid-buffer (iOS interrupting the tab) fires no `onended` until the context runs again, so
+ * without this the paused reply and everything behind it would carry no ▶ and count as heard.
+ * The buffer is not requeued — it resumes where it stopped, and the glyph is what resumes it.
+ */
+function audio() {
+  if (ctx) return ctx;
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  ctx.addEventListener("statechange", () => {
+    if (ctx.state !== "running" && playing) offer();
+  });
+  return ctx;
+}
+
+/** The reply decoded and queued: the voice waits its turn, and the words decode with it. False = those bytes are gone. */
 async function play(url, el, n) {
   try {
-    const bytes = await (await fetch(url)).arrayBuffer();
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    queue.push({ buf: await ctx.decodeAudioData(bytes), el, n });
-    playing ? speaking() : pump();
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(r.status);
+    const bytes = await r.arrayBuffer();
+    audio();
+    queue.push({ buf: await ctx.decodeAudioData(bytes), el, n, life: boot });
+    // behind a voice the context stopped, this one is unheard too — `pump()` offers for the same reason
+    playing ? (ctx.state === "running" ? speaking() : offer()) : pump();
+    return true;
   } catch {
-    ack(n); // the text is on screen; nothing to replay
-    el.dec.reveal();
-    warn("The reply audio is gone · ask again");
+    el.dec.reveal(); // the words stay; the body can say them again
+    return false;
   }
 }
 
-/** A reply heard to the end never comes back on a reload. */
-const ack = (n) =>
-  fetch("/remote/ack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ seq: n }) }).catch(() => {});
+/**
+ * Replies this page asked to hear: the seq he pressed → the words it must come
+ * back as. A replay is re-synthesised, so it lands as a new seq — the words are
+ * what ties it to the press, and a reply nobody asked for cannot take its turn.
+ */
+const wanted = new Map(); // pressed seq → {text, el, btn, timer}
+const WANTED_TTL_MS = 60_000; // a press whose words never came back gives the ▶ back
 
-/** One WAV at a time, in order; a suspended context stops the line at a ▶ button. */
+const norm = (t) => String(t ?? "").replace(/\s+/g, " ").trim();
+
+/** The press these words answer, once — its line is where the replay is played and shown. */
+function claim(text) {
+  const words = norm(text);
+  for (const [n, w] of wanted)
+    if (w.text === words) {
+      wanted.delete(n);
+      clearTimeout(w.timer);
+      return w;
+    }
+  return null;
+}
+
+/**
+ * The glyph on an Eye line, put there only while something of that reply is
+ * unheard: the original WAV while the ring still holds it, otherwise the body
+ * says those words again — to this page, whichever mode it is in.
+ */
+function playGlyph(el, n, url, text) {
+  const b = document.createElement("button");
+  b.className = "play";
+  b.type = "button";
+  b.setAttribute("aria-label", "Play this reply");
+  b.title = "Play this reply";
+  b.innerHTML = '<svg viewBox="0 0 12 14" aria-hidden="true"><path d="M1 1l10 6-10 6z"/></svg>';
+  b.addEventListener("click", async () => {
+    if (b.disabled) return; // a press whose replay is still in flight asks for nothing more
+    b.disabled = true;
+    try {
+      await unlock();
+      // the line, not the seq: what is unheard there waits under the seq of the replay, not of the press
+      if (playing?.el === el || queue.some((q) => q.el === el)) pump();
+      else if (!url || !(await play(url, el, n))) return void (await replay(n, text ?? el.dataset.text, el, b));
+      b.disabled = !!playing; // sounding: its own end takes the glyph. Still queued: he may press again
+    } catch {
+      warn("This device will not play sound"); // the glyph stays: the press may be tried again
+      b.disabled = false; // a device that cannot open a context still gets a second press
+    }
+  });
+  el.append(b);
+  return b;
+}
+
+/**
+ * Replies whose voice is still being made: the seq → the line holding a dim mark where its
+ * ▶ will go. No press exists while it is there — a ▶ that starts nothing reads as broken —
+ * and the body says on the poll lane, once, when the bytes are in hand or will never be.
+ */
+const notReady = new Map(); // reply seq → {el, mark}
+
+/** The quiet mark: this reply is coming, and there is nothing to press yet. */
+function waitMark(el, n) {
+  const mark = document.createElement("span");
+  mark.className = "wait";
+  mark.setAttribute("aria-label", "Preparing this reply");
+  mark.title = "Preparing this reply";
+  notReady.set(n, { el, mark });
+  el.append(mark);
+  return mark;
+}
+
+/** Its voice landed, or never will: the mark becomes the ▶ on that same line, in place. */
+function nowReady(n) {
+  const w = notReady.get(n);
+  if (!w) return;
+  notReady.delete(n);
+  w.mark.remove();
+  playGlyph(w.el, n);
+  if (!recording) ready(); // the count follows the tray: this one can be pressed now
+}
+
+/**
+ * The audio context opened *and* resumed inside his own press — the one moment iOS allows
+ * either. Arrival may have opened it already, locked; on a page he has not touched yet it
+ * does not exist, and creating it here is what makes one press enough.
+ */
+async function unlock() {
+  audio();
+  if (ctx.state !== "running") await ctx.resume().catch(() => {});
+}
+
+/**
+ * Nothing left to play, or nothing ever made: those words again, on the poll lane, and onto
+ * this same line when they come. The ▶ stays down until they do — one press, one synthesis,
+ * however many times he presses — and comes back if they never do.
+ */
+async function replay(n, text, el, b) {
+  // the press is on the books before the ask: the body publishes the replay while the POST is
+  // still in the air, and the poll that carries it lands first on a loaded phone — a press that
+  // was not there yet claimed nothing, so the reply took a second line and never played
+  const timer = setTimeout(() => {
+    if (!wanted.delete(n)) return;
+    b.disabled = false;
+    el.dec.reveal(); // the words were hidden for a voice that never came: they are his again
+    warn("That reply did not come back \u00b7 \u25b6 to ask again");
+  }, WANTED_TTL_MS);
+  wanted.set(n, { text: norm(text), el, btn: b, timer });
+  const r = await post("/remote/replay", { seq: n });
+  if (r && r.ok) return void state(null, "Saying that again");
+  const waited = wanted.delete(n); // false: the replay beat the answer and is already on his line
+  clearTimeout(timer);
+  if (r && r.status === 401) return locked();
+  if (!waited) return;
+  b.disabled = false;
+  // the body's one-second gap between two presses is not a refusal: the press keeps
+  if (r && r.status === 429) return void state(null, "One moment \u00b7 \u25b6 again");
+  el.dec.reveal();
+  warn("That reply cannot be said again");
+}
+
+/**
+ * The body came back as a new life: it counts the ring from 0 again, so every seq on this page
+ * names a reply that is gone — a ▶ pressed on one asks for someone else's words, and the stale
+ * cursor swallows everything numbered below it. What the page can still play itself keeps its
+ * glyph; the rest give up their words instead, once, with a line to him.
+ */
+function restarted(c) {
+  boot = c.boot;
+  // from the bottom of the new life, never from its head: what it has already said and he has
+  // not heard is numbered below that cursor, and a page that starts above it never sees those
+  seq = 0;
+  for (const [n, w] of wanted) {
+    clearTimeout(w.timer);
+    wanted.delete(n);
+  }
+  for (const [n, w] of notReady) {
+    notReady.delete(n);
+    w.mark.remove();
+    w.el.dec.reveal(); // its voice was being made by a body that is gone: the words are his
+  }
+  for (const el of log.querySelectorAll(".line.eye")) {
+    if (playing?.el === el || queue.some((q) => q.el === el)) continue;
+    if (!el.querySelector("button.play")) continue;
+    el.dec.reveal();
+    el.querySelector("button.play").remove();
+  }
+  warn("The Eye restarted \u00b7 those replies are gone");
+}
+
+/** A reply heard to the end never comes back on a reload — of the life that gave it, and no other. */
+const ack = (n, life = boot) => post("/remote/ack", { seq: n, boot: life });
+
+/**
+ * One WAV at a time, in order; a suspended context — or his own open mic — stops the line
+ * at a ▶ button. The page never speaks into the mic it is holding open: a reply that lands
+ * during a turn joins the tray instead of playing into it.
+ */
 function pump() {
   if (playing || !queue.length) return;
-  if (ctx.state !== "running") return offer(queue[0]);
-  const { buf, el, n } = queue.shift();
-  playing = true;
-  const src = ctx.createBufferSource();
-  src.buffer = buf;
-  src.connect(ctx.destination);
-  src.onended = () => {
-    playing = false;
-    ack(n);
+  if (recording || ctx.state !== "running") return offer();
+  const { buf, el, n, life } = (playing = queue.shift()); // the item is held while it sounds
+  const s = (src = ctx.createBufferSource());
+  s.buffer = buf;
+  s.connect(ctx.destination);
+  s.onended = () => {
+    if (s !== src) return; // stopped by `cut()`: he did not hear it out, so nothing is acked
+    playing = null;
+    src = null;
+    ack(n, life);
+    el.querySelector("button.play")?.remove(); // nothing of it is unheard now
     if (queue.length) return pump();
     if (!recording) ready();
   };
-  src.start();
+  s.start();
   el.dec.reveal(buf.duration * 1000); // the words keep pace with the voice, never faster than the TV
   speaking();
 }
 const speaking = () => state("speaking", queue.length ? `${queue.length} more waiting` : "");
 
-/** A suspended context never fails silently: he gets a button, and it drains the queue. */
-function offer(item) {
-  item.el.dec.reveal();
-  if (item.el.querySelector("button")) return;
-  const b = document.createElement("button");
-  b.textContent = "▶ play";
-  b.addEventListener("click", async () => {
-    await ctx.resume();
-    b.remove();
-    pump();
-  });
-  item.el.append(b);
-  warn("Tap ▶ on the reply to hear it");
+/**
+ * A suspended context never fails silently: the line's own glyph is what resumes it.
+ * Decoding is not hearing, so the glyph is put there here — this is the one place that
+ * knows the bytes are made and still unheard (a fresh page on iOS, where the context
+ * was never opened by a gesture). Every reply waiting behind it is unheard too, and
+ * carries its own ▶: one press drains them all, and the count says how many there are.
+ * A voice the context stopped mid-word is in the tray as well — it is not heard yet either.
+ */
+function offer() {
+  for (const item of playing ? [playing, ...queue] : queue) {
+    item.el.dec.reveal();
+    const b = item.el.querySelector("button.play");
+    // a glyph in the tray is a reply he has not heard: one cut while it sounded left it down
+    b ? (b.disabled = false) : playGlyph(item.el, item.n);
+  }
+  if (recording) return; // his open turn keeps the line under the eye; the tray is counted when it closes
+  const many = (playing ? 1 : 0) + queue.length > 1;
+  warn(`Tap \u25b6 on the ${many ? "replies" : "reply"} to hear ${many ? "them" : "it"}`);
 }
 
 // the phone's radio says so before a hanging poll would
@@ -857,15 +1734,46 @@ addEventListener("offline", () => {
   }
 });
 addEventListener("online", () => poll?.abort()); // the hung poll fails now and the loop comes back
-addEventListener("blur", () => { focused = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } });
+addEventListener("blur", () => { focused = false; park(); });
 addEventListener("focus", () => { focused = true; eye.last = 0; wake(); });
 addEventListener("visibilitychange", () => {
-  if (document.hidden) { stop(); return; } // his words go now, not when he comes back
+  if (document.hidden) return void park(); // the turn keeps running: only the animation parks
   focused = true;
   eye.last = 0;
   wake();
+  lost(); // back from an absence longer than the body's patience
   if (!disc.disabled) loop();
 });
+
+// -- a small window of its own, so he can see and tap it from another tab ----
+const mainEl = document.querySelector("main"), pipBtn = $("pip");
+if (DESK && "documentPictureInPicture" in window) pipBtn.classList.remove("hide");
+
+/** The eye, the state line and the disc in an always-on-top window; the mic never moves. */
+async function keepVisible() {
+  if (pip) return void pip.close();
+  pip = await documentPictureInPicture.requestWindow({ width: 320, height: 300 });
+  for (const s of document.querySelectorAll("style")) pip.document.head.append(s.cloneNode(true));
+  park();
+  pip.document.body.append(talk);
+  pip.addEventListener("keydown", keys); // the keys follow the disc into its own window
+  host = pip;
+  pipBtn.setAttribute("aria-pressed", "true");
+  pip.addEventListener("pagehide", () => {
+    park();
+    pip = null;
+    host = window;
+    mainEl.append(talk);
+    pipBtn.setAttribute("aria-pressed", "false");
+    eye.last = 0;
+    wake();
+  });
+  eye.last = 0;
+  wake();
+  loop();
+}
+// a refusal is this attempt's, not the API's — the glyph stays, the feature detection owns hiding
+pipBtn.addEventListener("click", () => keepVisible().catch(() => warn("That window was refused \u00b7 tap the glyph again")));
 </script>
 </body>
 </html>

@@ -209,6 +209,13 @@ void main(){
 
 const FS_RING: &str = include_str!("ring.frag");
 
+/// One flat premultiplied colour over its rect — the marks' squares.
+const FS_FILL: &str = r#"#version 300 es
+precision highp float;
+out vec4 frag;
+uniform vec4 uColor;
+void main(){ frag = vec4(uColor.rgb * uColor.a, uColor.a); }"#;
+
 /// One glyph to draw: baseline origin, css size, alpha, atlas cell. The
 /// fields are read as raw bytes by the instance buffer, never by name.
 #[allow(dead_code)]
@@ -255,12 +262,12 @@ fn push(out: &mut Vec<Quad>, cache: &mut GlyphCache, k: FontKey, px: u16, ch: ch
 fn ripple(t: f64, off: f64, rgb: [f64; 3], peak: f64) -> Ring {
     let k = overlay::ring_k(t, off);
     let (a, b) = overlay::ring_shape(k);
-    Ring {
-        a: a as f32,
-        b: b as f32,
-        rgb: [(rgb[0] / 255.0) as f32, (rgb[1] / 255.0) as f32, (rgb[2] / 255.0) as f32],
-        alpha: (peak * (1.0 - k)) as f32,
-    }
+    Ring { cx: CX as f32, cy: CY as f32, a: a as f32, b: b as f32, rgb: unit(rgb), alpha: (peak * (1.0 - k)) as f32 }
+}
+
+/// 0-255 components as GL's 0-1.
+fn unit(rgb: [f64; 3]) -> [f32; 3] {
+    [(rgb[0] / 255.0) as f32, (rgb[1] / 255.0) as f32, (rgb[2] / 255.0) as f32]
 }
 
 /// The heard line's characters and their x, laid out once per sentence.
@@ -271,9 +278,11 @@ fn heard_layout(text: &str) -> (String, Vec<(char, f64)>) {
     (text.to_string(), at)
 }
 
-/// One ripple this frame: its two radii and the colour it strokes with.
+/// One ring this frame: its centre, its two radii and the colour it strokes with.
 #[derive(Clone, Copy)]
 struct Ring {
+    cx: f32,
+    cy: f32,
     a: f32,
     b: f32,
     rgb: [f32; 3],
@@ -348,6 +357,7 @@ pub struct Renderer {
     p_blur: glow::Program,
     p_scan: glow::Program,
     p_ring: glow::Program,
+    p_fill: glow::Program,
     vao: glow::VertexArray,
     vao_text: glow::VertexArray,
     inst_vbo: glow::Buffer,
@@ -399,6 +409,8 @@ pub struct Renderer {
     backdrop_quad: Option<Quad>,
     rings: Vec<Ring>,
     heard: Option<(String, Vec<(char, f64)>)>,
+    /// the marks' squares: rect and premultiplied-ready colour
+    fills: Vec<([f32; 4], [f32; 4])>,
 }
 
 unsafe fn program(gl: &glow::Context, vs: &str, fs: &str) -> Result<glow::Program, Box<dyn Error>> {
@@ -512,6 +524,7 @@ impl Renderer {
             let p_blur = program(&gl, VS_RECT, FS_BLUR)?;
             let p_scan = program(&gl, VS_RECT, FS_SCAN)?;
             let p_ring = program(&gl, VS_RECT, FS_RING)?;
+            let p_fill = program(&gl, VS_RECT, FS_FILL)?;
 
             let vao = gl.create_vertex_array()?;
             gl.bind_vertex_array(Some(vao));
@@ -582,6 +595,7 @@ impl Renderer {
                 p_blur,
                 p_scan,
                 p_ring,
+                p_fill,
                 vao,
                 vao_text,
                 inst_vbo,
@@ -620,6 +634,7 @@ impl Renderer {
                 backdrop_quad: None,
                 rings: Vec::with_capacity(2),
                 heard: None,
+                fills: Vec::with_capacity(overlay::MARK_MAX),
                 noise_rgb: crate::caption::EYE_PALETTE.noise,
             })
         }
@@ -706,10 +721,20 @@ impl Renderer {
         gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
     }
 
-    /// One shaded ripple over its own bounding box.
+    /// One flat rect.
+    unsafe fn fill(&self, dst: [f32; 4], rgba: [f32; 4], res: (f32, f32)) {
+        let gl = &self.gl;
+        gl.use_program(Some(self.p_fill));
+        self.set4(self.p_fill, "uRect", dst[0], dst[1], dst[2], dst[3]);
+        self.set2(self.p_fill, "uRes", res.0, res.1);
+        self.set4(self.p_fill, "uColor", rgba[0], rgba[1], rgba[2], rgba[3]);
+        gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+    }
+
+    /// One shaded ring over its own bounding box.
     unsafe fn ring(&self, r: &Ring, res: (f32, f32)) {
         let gl = &self.gl;
-        let (cx, cy) = (CX as f32, CY as f32);
+        let (cx, cy) = (r.cx, r.cy);
         let dst = [cx - r.a - 2.0, cy - r.b - 2.0, 2.0 * (r.a + 2.0), 2.0 * (r.b + 2.0)];
         gl.use_program(Some(self.p_ring));
         self.set4(self.p_ring, "uRect", dst[0], dst[1], dst[2], dst[3]);
@@ -892,6 +917,21 @@ impl Renderer {
             }
         }
 
+        // the marks under the eye: static squares, the mode ring, the `+`
+        self.fills.clear();
+        let row = overlay::mark_row(&st.marks, st.mode);
+        let (m, a) = (overlay::MARK as f32, overlay::MARK_ALPHA);
+        for (x, rgb) in &row.squares {
+            let [r, g, b] = unit(*rgb);
+            self.fills.push(([*x as f32, overlay::MARK_Y as f32, m, m], [r, g, b, a as f32]));
+        }
+        for (left, ch) in [(row.ring, overlay::RING_GLYPH), (row.plus, overlay::PLUS_GLYPH)] {
+            if let Some(left) = left {
+                let (_, x, y) = overlay::mark_glyph(left, ch);
+                push(&mut self.over, &mut self.cache, FontKey::text(TEXT_FONT), overlay::MARK_PX, ch, x, y, overlay::MID, a);
+            }
+        }
+
         // the caption: the blurred band, the noise still decoding, the words
         self.cap_text.clear();
         self.noise.clear();
@@ -1057,6 +1097,9 @@ impl Renderer {
                 self.ring(r, gl_res);
             }
             self.quads(&self.over, self.tex_cache, gl_res);
+            for (dst, rgba) in &self.fills {
+                self.fill(*dst, *rgba, gl_res);
+            }
             if let Some(q) = self.backdrop_quad {
                 self.quads(&[q], self.tex_backdrop, gl_res);
             }

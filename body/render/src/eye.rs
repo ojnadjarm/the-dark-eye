@@ -26,7 +26,7 @@ pub const BLOOM_X: f64 = CX - RX - 20.0;
 pub const BLOOM_Y: f64 = CY - RY - 20.0;
 pub const BLOOM_W: f64 = (RX + 20.0) * 2.0;
 pub const BLOOM_H: f64 = (RY + 20.0) * 2.0;
-const GREEN: [f64; 3] = [77.0, 255.0, 160.0];
+pub const GREEN: [f64; 3] = [77.0, 255.0, 160.0];
 /// Everything the eye can touch — the lids, the rim glyphs at full size, the
 /// bloom — with room to spare. Nothing is drawn outside it, so every buffer
 /// op and the blit to the window stay inside it. `x, y, w, h`.
@@ -86,13 +86,12 @@ pub fn lid_y(a: f64) -> f64 {
 
 /// `#rrggbb` → 0-255 components; anything else stays green.
 pub fn hex_rgb(h: &str) -> [f64; 3] {
-    let b = h.as_bytes();
-    if b.len() < 7 || b[0] != b'#' {
+    if !h.is_ascii() || h.len() != 7 || !h.starts_with('#') {
         return GREEN;
     }
-    let p = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).map(f64::from);
+    let p = |i: usize| h.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()).map(f64::from);
     match (p(1), p(3), p(5)) {
-        (Ok(r), Ok(g), Ok(bl)) => [r, g, bl],
+        (Some(r), Some(g), Some(bl)) => [r, g, bl],
         _ => GREEN,
     }
 }
@@ -207,7 +206,7 @@ impl Scene {
         }
         g.restore()?;
 
-        // ---- on top of the eye: agents, rings, what it heard, the caption
+        // ---- on top of the eye: agents, rings, what it heard, the marks, the caption
         st.orbiters.draw(&g, &sim.atlas, f.t, now);
         if f.listening {
             overlay::listening_ring(&g, f.t);
@@ -218,6 +217,7 @@ impl Scene {
         if let Some(text) = &st.heard {
             overlay::heard(&g, text);
         }
+        overlay::marks(&g, &st.marks, st.mode);
         if let Some(cap) = &st.caption {
             self.painter.draw(&g, cap, &sim.atlas, now)?;
         }
@@ -329,7 +329,7 @@ mod tests {
     fn a_colour_is_read_from_its_hex_and_anything_else_stays_green() {
         assert_eq!(hex_rgb("#b04dff"), [176.0, 77.0, 255.0]);
         assert_eq!(hex_rgb("#4dffa0"), [77.0, 255.0, 160.0]);
-        for bad in ["", "b04dff", "#zz4dff", "#abc"] {
+        for bad in ["", "b04dff", "#zz4dff", "#abc", "#aébcd", "#b04dffaa", "#b04df"] {
             assert_eq!(hex_rgb(bad), [77.0, 255.0, 160.0], "{bad}");
         }
     }

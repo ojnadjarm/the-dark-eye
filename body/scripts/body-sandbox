@@ -8,7 +8,37 @@ BODY=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)
 RUN=${XDG_RUNTIME_DIR:-/tmp}/dark-eye
 LIVE_SOCK=$RUN/render.sock
 ROOT=$RUN/sandbox
-OFFSCREEN=-1400            # place() draws at 1010+offset; anything > -1400 is on the TV
+EYE_W=340 EYE_MARGIN=16    # render/src/window.rs: EYE_W, MARGIN
+OFF_FLOOR=-32768           # window.rs place() ends `(x as i16, y as i16)`: below this the
+                           # placement wraps back onto a screen (-66000 → x 1100 on the panel)
+SLEEP_BIN=/bin/sleep       # `--eye off` parks the renderer here: the one place to widen
+
+# Every key `up` writes, and every key it must write: absent, each one falls back to the
+# owner's live tree — his config.json (real port, real secret, real remotePort), his
+# orbiters.json, his TV override, his state dir. So the set is asserted, not just the
+# value of whichever member happens to be there.
+REQUIRED_KEYS=(XDG_CONFIG_HOME XDG_STATE_HOME DARK_EYE_RENDER_SOCK DARK_EYE_ORBIT_FILE
+  DARK_EYE_ACTIVE_FILE DARK_EYE_QUIET_FILE DARK_EYE_MODE_FILE DARK_EYE_TV_OVERRIDE_FILE
+  DARK_EYE_SANDBOX)
+canon() { # the value `up` writes for key $1 of the sandbox in dir $2 named $3
+  case "$1" in
+    XDG_CONFIG_HOME) echo "$2/xdg" ;;
+    XDG_STATE_HOME) echo "$2/state" ;;
+    DARK_EYE_RENDER_SOCK) echo "$2/render.sock" ;;
+    DARK_EYE_ORBIT_FILE) echo "$2/orbiters.json" ;;
+    DARK_EYE_ACTIVE_FILE) echo "$2/active.json" ;;
+    DARK_EYE_QUIET_FILE) echo "$2/quiet.json" ;;
+    DARK_EYE_MODE_FILE) echo "$2/mode.json" ;;
+    DARK_EYE_TV_OVERRIDE_FILE) echo "$2/tv-override.json" ;;
+    DARK_EYE_SANDBOX) echo "$3" ;;
+    *) die "canon: no value for $1" ;;
+  esac
+}
+
+path_key() { # every required key but the name is a path `up` puts inside the sandbox dir
+  [ "$1" != DARK_EYE_SANDBOX ] || return 1
+  case " ${REQUIRED_KEYS[*]} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
 
 die() { echo "body-sandbox: $*" >&2; exit 1; }
 refuse_live() { # exit 2 rather than touch the owner's eye
@@ -18,28 +48,178 @@ refuse_live() { # exit 2 rather than touch the owner's eye
   return 0
 }
 
+# The offset is derived from RandR, never a constant: `place()` draws the eye at
+# `largest.x + largest.w - EYE_W - MARGIN + offset`, so an offset calibrated for one
+# output is *inside* another. With the TV off the largest output is the laptop panel
+# and the old -1400 put the eye at x=164 on his screen.
+offscreen_bound() { # the largest offset that still keeps the window clear of every output
+  # the bound is derived here and nowhere else — no cache, no env override.
+  local geom bound
+  geom=$(xrandr --query 2>/dev/null) ||
+    die "cannot read the RandR outputs (DISPLAY='${DISPLAY:-}') — refusing to guess an offscreen offset"
+  bound=$(python3 -c '
+import re, sys
+eye_w, margin = int(sys.argv[1]), int(sys.argv[2])
+mons = []
+for ln in sys.stdin:
+    if " connected" not in ln:
+        continue
+    m = re.search(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", ln)
+    if m:
+        w, h, x, y = (int(v) for v in m.groups())
+        if w and h:
+            mons.append((x, w))
+if not mons:
+    sys.exit("no RandR output has a mode")
+minx = min([x for x, _ in mons] + [0])
+# whichever output place() calls the largest, the window must end left of them all
+print(min(minx - (x + w) + margin for x, w in mons))
+' "$EYE_W" "$EYE_MARGIN" <<<"$geom") ||
+    die "cannot derive the offscreen offset from the RandR outputs"
+  echo "$bound"
+}
+offscreen_offset() { # one full window width clear of the bound, so a rounding is not a pixel on screen
+  echo $(( $(offscreen_bound) - EYE_W ))
+}
+
 usage() {
   cat <<'EOF'
 usage: body-sandbox <verb> [options]
 
-  up [--name N] [--eye off|offscreen] [--gpu 0|1] [--stats] [--audio none|null]
+  up [--name N] [--eye off|offscreen] [--gpu 0|1] [--stats] [--audio null|none]
                         an isolated body: own config/port, own render socket,
-                        own orbiters, own state dir. Prints the exports.
-                        eval "$(body-sandbox up --eye offscreen --audio null)"
+                        own orbiters, own state dir. Prints the exports; on any
+                        failure prints "export DARK_EYE_CONFIG=/nonexistent; false"
+                        so an eval'd session cannot reach the live body.
+                        Default name: sb-<pid> (unique per call). `--audio none` is
+                        NOT audio-isolated: it speaks in the owner's room.
+                        eval "$(body-sandbox up --name t1 --eye offscreen --audio null)"
   eye [--gpu 0|1] [--stats] [--seed N] [--seconds N]
       [--demo --busy | --dump PNG --scene idle|caption|resolved|rings|agents]
                         a bare eye-render on a dead socket, always offscreen
+  restart --name N      stop that sandbox body and start it again on the same
+                        state dir, port and sink: every persisted file stays.
+                        Prints the new exports; same poisoned env on failure.
   env [--name N]        re-print the exports of a running sandbox
   status                every sandbox, its pid and its port
-  logs [--name N] [-f]  its body.log
-  down [--name N|--all] kill by PID, unload the sink it loaded, remove the dir
+  logs [--name N] [-f]  its body.log (--name optional only while one sandbox exists)
+  down --name N|--all   kill by PID, unload the sink it loaded, remove the dir
 EOF
   exit "${1:-0}"
 }
 
 sbdir() { echo "$ROOT/$1"; }
+real_sb() { # dir $1 must BE $ROOT/$2: a symlinked $ROOT/<name> moves the whole sandbox
+  [ "$(readlink -m "$1")" = "$(readlink -m "$ROOT")/$2" ] ||
+    die "sandbox dir $1 does not resolve to $ROOT/$2 — remove it by hand"
+}
+only_sb() { # the one sandbox that exists, or die
+  local ds=("$ROOT"/*/)
+  [ ${#ds[@]} -eq 1 ] && [ -d "${ds[0]}" ] || die "--name N is required (sandboxes: $(ls "$ROOT" 2>/dev/null | tr '\n' ' '))"
+  basename "${ds[0]}"
+}
 pidof_sb() { local d; d=$(sbdir "$1"); [ -r "$d/body.pid" ] && cat "$d/body.pid" || true; }
 alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
+inside() { # 0 if path $1 resolves inside dir $2. `readlink -m` canonicalises a
+  # path whose components do not exist yet (the body mkdir -p's them itself), so
+  # a `.../missing/../../..` never survives the check as a raw string.
+  local p q
+  p=$(readlink -m "$1") || die "cannot resolve body.env path '$1'"
+  q=$(readlink -m "$2") || die "cannot resolve sandbox dir '$2'"
+  case "$p" in "$q"/*) return 0 ;; *) return 1 ;; esac
+}
+is_sb() { # 0 only if pid $1 really is a body of sandbox $2 — a recycled pid is not
+  local pid=${1:-} name=$2
+  [ -n "$pid" ] && [ -r "/proc/$pid/environ" ] || return 1
+  tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | grep -qxF "DARK_EYE_SANDBOX=$name"
+}
+off_ok() { # an --x-offset value is offscreen only if it is an integer at or below the bound
+  case "${1:-}" in -[0-9]*) ;; *) return 1 ;; esac  # a positive offset is on the screen
+  case "${1#-}" in *[!0-9]*) return 1 ;; esac
+  # and at or above the floor: place() truncates to i16, so a lower offset wraps back on
+  [ "$1" -ge "$OFF_FLOOR" ] && [ "$1" -le "$(offscreen_bound)" ]
+}
+
+check_env() { # what start_body would launch, not what the dir is named: `up` and
+  # `restart` both refuse a body.env whose socket is the live one, whose paths have
+  # been edited to point outside the sandbox dir, or which carries any key at all
+  # beyond the ones `up` writes
+  local d=$1 n benv=() e k v sock="" sbname="" rbin="" rargs="" sink="" seen=" "
+  n=$(basename "$d")
+  [ -s "$d/body.env" ] || die "sandbox '$n' has no body.env — take it down and up again"
+  mapfile -d '' -t benv < "$d/body.env"
+  for e in "${benv[@]}"; do
+    case "${e%%=*}" in
+      DARK_EYE_RENDER_SOCK) sock=${e#*=} ;;
+      DARK_EYE_SANDBOX) sbname=${e#*=} ;;
+    esac
+  done
+  [ -n "$sock" ] || die "body.env has no DARK_EYE_RENDER_SOCK — take it down and up again"
+  refuse_live "$sock"                               # the live socket first: its own exit 2
+  [ "$sbname" = "$n" ] || die "body.env says DARK_EYE_SANDBOX='$sbname', not '$n' — take it down and up again"
+  # exactly the keys `up` writes, and nothing else: a key nobody validated is a
+  # key nobody isolated (DARK_EYE_SINK on the owner's speakers, DARK_EYE_RENDER_BIN
+  # on any executable), so an unexpected one is refused instead of launched.
+  for e in "${benv[@]}"; do
+    [ -n "$e" ] || continue
+    k=${e%%=*} v=${e#*=} seen="$seen$k "
+    # present is not set: every consumer reads `$KEY || <the owner's live path>`, so an
+    # empty value IS an absent one, and a relative one resolves against whatever cwd the
+    # caller happens to have (`cd <dir>/state` is inside the dir, and passes `inside`).
+    if path_key "$k"; then
+      case "$v" in
+        "") die "body.env $k is empty — an empty value falls back to the owner's live tree — take it down and up again" ;;
+        /*) inside "$v" "$d" || die "body.env $k=$v is outside $d — take it down and up again" ;;
+        *) die "body.env $k=$v is not an absolute path — take it down and up again" ;;
+      esac
+      continue
+    fi
+    case "$k" in
+      DARK_EYE_SANDBOX | DARK_EYE_GPU | DARK_EYE_STATS) ;;
+      DARK_EYE_SINK)                                  # only the null sink `up` loaded for this name
+        sink=$v; [ "$v" = "eye_sandbox_$n" ] || die "body.env DARK_EYE_SINK=$v is not this sandbox's null sink — take it down and up again" ;;
+      DARK_EYE_RENDER_BIN)                            # `--eye off` parks the renderer here: outside the dir by design
+        rbin=$v; [ "$v" = "$SLEEP_BIN" ] || die "body.env DARK_EYE_RENDER_BIN=$v is not $SLEEP_BIN — take it down and up again" ;;
+      DARK_EYE_RENDER_ARGS)                           # the offscreen offset, or /bin/sleep's argument
+        rargs=$v; case "$v" in
+          infinity) ;;
+          "--x-offset "*) off_ok "${v#--x-offset }" ||
+            die "body.env DARK_EYE_RENDER_ARGS=$v is not the offscreen offset ($OFF_FLOOR..$(offscreen_bound) on the outputs up now) — take it down and up again" ;;
+          *) die "body.env DARK_EYE_RENDER_ARGS=$v is not the offscreen offset — take it down and up again" ;;
+        esac ;;
+      *) die "body.env has a key \`up\` does not write ($k) — take it down and up again" ;;
+    esac
+  done
+  # bounding the keys that are there is half of it: a key that is gone is a key that
+  # falls back to the owner's tree, and deleting one is easier than editing one.
+  for k in "${REQUIRED_KEYS[@]}"; do
+    case "$seen" in *" $k "*) ;;
+      *) die "body.env has no $k — an absent key falls back to the owner's live tree — take it down and up again" ;;
+    esac
+  done
+  # exactly one renderer shape: the offscreen offset, or no renderer at all. With
+  # neither, main.js spawns the real eye-render at its on-screen default position.
+  if [ -n "$rbin" ]; then
+    [ "$rargs" = infinity ] ||
+      die "body.env has DARK_EYE_RENDER_BIN=$rbin without DARK_EYE_RENDER_ARGS=infinity — take it down and up again"
+  else
+    case "$rargs" in "--x-offset "*) ;; *) false ;; esac ||
+      die "body.env has neither the offscreen DARK_EYE_RENDER_ARGS nor DARK_EYE_RENDER_BIN — the real eye-render would draw on the owner's screen — take it down and up again"
+  fi
+  # `--audio null` loaded a null sink for this name, so the body must be pointed at it.
+  # `--audio none` loads none and is NOT audio-isolated (RUNBOOK): nothing to require.
+  if [ -s "$d/sink.module" ]; then
+    [ "$sink" = "eye_sandbox_$n" ] ||
+      die "body.env has no DARK_EYE_SINK but this sandbox loaded eye_sandbox_$n — take it down and up again"
+  fi
+}
+
+dump_path() { # `--dump` writes wherever the caller says: a scratch path only, never his tree
+  local p=$1
+  case "$p" in /*.png) ;; *) die "--dump needs an absolute *.png path, not '$p'" ;; esac
+  inside "$p" "$ROOT" || inside "$p" "${TMPDIR:-/tmp}" || inside "$p" /tmp ||
+    die "--dump $p is outside $ROOT and ${TMPDIR:-/tmp} — dump to a scratch path and copy it"
+}
 
 free_port() { # 8643 up, skipping 8644 (the phone's tailnet listener)
   local p=8643
@@ -48,6 +228,47 @@ free_port() { # 8643 up, skipping 8644 (the phone's tailnet listener)
     ss -ltnH "sport = :$p" 2>/dev/null | grep -q . || { echo "$p"; return; }
     p=$((p + 1))
   done
+}
+
+bridge_ons() { local n; n=$(grep -c 'bridge on' "$1" 2>/dev/null || true); echo "${n:-0}"; }
+
+start_body() { # launch node in $1 with its saved env, wait for a fresh 'bridge on', set $pid
+  local d=$1 was n benv=() clear=() v
+  was=$(bridge_ons "$d/body.log")
+  check_env "$d"
+  mapfile -d '' -t benv < "$d/body.env"
+  # an ambient DARK_EYE_* (a caller's DARK_EYE_SINK, say) would reach past the array
+  for v in $(compgen -e | grep '^DARK_EYE_' || true); do clear+=(-u "$v"); done
+  setsid env "${clear[@]+"${clear[@]}"}" "${benv[@]}" node "$BODY/src/main.js" >> "$d/body.log" 2>&1 &
+  pid=$!
+  echo "$pid" > "$d/body.pid"
+  for _ in $(seq 100); do
+    n=$(bridge_ons "$d/body.log"); [ "$n" -gt "$was" ] && return 0
+    alive "$pid" || { echo "body-sandbox: the body died at start:" >&2; tail -5 "$d/body.log" >&2; exit 1; }
+    sleep 0.1
+  done
+  kill "$pid" 2>/dev/null || true
+  die "no 'bridge on' in 10 s (see $d/body.log)"
+}
+
+kill_body() { # kill node by PID, then any surviving eye-render; 1 if anything lived.
+  # A pid is killed only while its own environ says it is this sandbox: a recycled
+  # pid (or the live body) is left alone and counts as already gone.
+  local pid=$1 kids=$2 name=$3 bad=0 k
+  if alive "$pid" && is_sb "$pid" "$name"; then
+    kill "$pid" 2>/dev/null || true                 # a plain kill takes its eye-render with it
+    for _ in $(seq 50); do alive "$pid" || break; sleep 0.1; done
+    alive "$pid" && kill -9 "$pid" 2>/dev/null || true
+    alive "$pid" && { echo "body-sandbox: pid $pid survived" >&2; bad=1; }
+  fi
+  for k in $kids; do                                # a kill -9'd eye-render survives: by PID
+    is_sb "$k" "$name" || continue
+    kill "$k" 2>/dev/null || true
+    sleep 0.3
+    kill -0 "$k" 2>/dev/null && kill -9 "$k" 2>/dev/null || true
+    kill -0 "$k" 2>/dev/null && { echo "body-sandbox: child $k survived" >&2; bad=1; }
+  done
+  return $bad
 }
 
 print_env() { # the three lines every agent then pastes
@@ -68,19 +289,21 @@ case "$cmd" in help|-h|--help) usage 0 ;; esac
 case "$cmd" in
 
 up)
-  name=s1 eye=off gpu="" stats="" audio=none
+  # an eval'd failure must poison the env, or the next `eye` call reaches the live body
+  trap '[ $? -eq 0 ] || echo "export DARK_EYE_CONFIG=/nonexistent; false"' EXIT
+  name=sb-$$ eye=off gpu="" stats="" audio=null
   while [ $# -gt 0 ]; do
     case "$1" in
       --name) name=${2:?--name N}; shift 2 ;;
       --eye) eye=${2:?--eye off|offscreen}; case "$eye" in off|offscreen) ;; *) die "--eye is off or offscreen" ;; esac; shift 2 ;;
       --gpu) gpu=${2:?--gpu 0|1}; shift 2 ;;
       --stats) stats=1; shift ;;
-      --audio) audio=${2:?--audio none|null}; case "$audio" in none|null) ;; *) die "--audio is none or null" ;; esac; shift 2 ;;
+      --audio) audio=${2:?--audio null|none}; case "$audio" in none|null) ;; *) die "--audio is none or null" ;; esac; shift 2 ;;
       *) die "unknown option: $1" ;;
     esac
   done
   [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || die "--name must be [A-Za-z0-9_-]"
-  d=$(sbdir "$name")
+  d=$(sbdir "$name"); real_sb "$d" "$name"
   old=$(pidof_sb "$name"); alive "$old" && die "sandbox '$name' is already up (pid $old) — body-sandbox down --name $name"
 
   sock=$d/render.sock
@@ -91,7 +314,8 @@ up)
   mkdir -p "$d/xdg/dark-eye" "$d/state"
   port=$(free_port)
   # the live config is only read; the copy gets its own secret, its own port and
-  # NO remotePort — a sandbox never opens a second tailnet listener
+  # NO remotePort, so an `up` opens no second tailnet listener — `check_env` validates
+  # body.env only, so a remotePort re-added to the copy survives a `restart`
   LIVE_CFG=${XDG_CONFIG_HOME:-$HOME/.config}/dark-eye/config.json \
   python3 - "$d/xdg/dark-eye/config.json" "$port" <<'PY'
 import json, os, secrets, sys
@@ -116,62 +340,89 @@ PY
     echo "$mod" > "$d/sink.module"
   fi
 
-  env=(
-    "XDG_CONFIG_HOME=$d/xdg"
-    "XDG_STATE_HOME=$d/state"
-    "DARK_EYE_RENDER_SOCK=$sock"
-    "DARK_EYE_ORBIT_FILE=$d/orbiters.json"
-    "DARK_EYE_SANDBOX=$name"
-  )
+  env=()
+  for k in "${REQUIRED_KEYS[@]}"; do env+=("$k=$(canon "$k" "$d" "$name")"); done
   [ -n "$sink" ] && env+=("DARK_EYE_SINK=$sink")
   [ -n "$gpu" ] && env+=("DARK_EYE_GPU=$gpu")
   [ -n "$stats" ] && env+=("DARK_EYE_STATS=1")
   if [ "$eye" = offscreen ]; then
-    env+=("DARK_EYE_RENDER_ARGS=--x-offset $OFFSCREEN")
+    env+=("DARK_EYE_RENDER_ARGS=--x-offset $(offscreen_offset)")
   else
     # no eye at all: the bridge still owns its socket, nothing ever connects
-    env+=("DARK_EYE_RENDER_BIN=/bin/sleep" "DARK_EYE_RENDER_ARGS=infinity")
+    env+=("DARK_EYE_RENDER_BIN=$SLEEP_BIN" "DARK_EYE_RENDER_ARGS=infinity")
   fi
 
   : > "$d/body.log"
-  setsid env "${env[@]}" node "$BODY/src/main.js" >> "$d/body.log" 2>&1 &
-  pid=$!
-  echo "$pid" > "$d/body.pid"
+  printf '%s\0' "${env[@]}" > "$d/body.env"          # `restart` starts the same body again
+  start_body "$d"
 
-  for _ in $(seq 100); do
-    grep -q 'bridge on' "$d/body.log" && break
-    alive "$pid" || { echo "body-sandbox: the body died at start:" >&2; tail -5 "$d/body.log" >&2; exit 1; }
-    sleep 0.1
-  done
-  grep -q 'bridge on' "$d/body.log" || { kill "$pid" 2>/dev/null || true; die "no 'bridge on' in 10 s (see $d/body.log)"; }
+  print_env "$d" "$pid"
+  ;;
+
+restart)
+  # same poison as `up`: an eval'd failure must never fall through to the live body
+  trap '[ $? -eq 0 ] || echo "export DARK_EYE_CONFIG=/nonexistent; false"' EXIT
+  case "${1:-}" in
+    --name) name=${2:?--name N} ;;
+    "") die "restart needs --name N (never a shared default)" ;;
+    *) die "unknown option: $1" ;;
+  esac
+  [ $# -le 2 ] || die "unknown option: $3"
+  [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]] || die "--name must be [A-Za-z0-9_-]"
+  d=$(sbdir "$name"); real_sb "$d" "$name"; pid=$(pidof_sb "$name")
+  alive "$pid" || die "no sandbox '$name' is up — body-sandbox up --name $name"
+  # nothing is written for a pid that is not this sandbox's own body
+  is_sb "$pid" "$name" || die "pid $pid is not the body of sandbox '$name' — body-sandbox down --name $name"
+  # a body.env from before a key existed would let the restarted body read and write the
+  # owner's live tree (his config, his orbiters, his TV override): the whole set goes back
+  if [ -s "$d/body.env" ]; then
+    for k in "${REQUIRED_KEYS[@]}"; do
+      tr '\0' '\n' < "$d/body.env" | grep -q "^$k=" ||
+        printf '%s=%s\0' "$k" "$(canon "$k" "$d" "$name")" >> "$d/body.env"
+    done
+    tr '\0' '\n' < "$d/body.env" | grep -qE '^DARK_EYE_RENDER_(BIN|ARGS)=' ||
+      printf 'DARK_EYE_RENDER_BIN=%s\0DARK_EYE_RENDER_ARGS=infinity\0' "$SLEEP_BIN" >> "$d/body.env"
+  fi
+  check_env "$d"                                    # before the kill: a bad env leaves it running
+
+  kids=$(pgrep -P "$pid" 2>/dev/null || true)
+  kill_body "$pid" "$kids" "$name" || die "sandbox '$name' would not stop — refusing to start a second body"
+  # the dir, the config, the port, the sink and every persisted file stay as they are
+  start_body "$d"
 
   print_env "$d" "$pid"
   ;;
 
 eye)
   gpu="" stats="" seed="" seconds=12 extra=()
+  off=$(offscreen_offset)
   while [ $# -gt 0 ]; do
     case "$1" in
       --gpu) gpu=${2:?--gpu 0|1}; shift 2 ;;
       --stats) stats=1; shift ;;
       --seed) seed=${2:?--seed N}; shift 2 ;;
       --seconds) seconds=${2:?--seconds N}; shift 2 ;;
-      --x-offset) die "the sandbox eye is always --x-offset $OFFSCREEN (anything larger is on the TV)" ;;
+      --x-offset) die "the sandbox eye is always --x-offset $off (anything larger is on a screen)" ;;
+      --dump) dump=${2:?--dump PNG}; dump_path "$dump"; extra+=(--dump "$dump"); shift 2 ;;
       *) extra+=("$1"); shift ;;
     esac
   done
-  # a dead socket, never the live one: an eye-render on render.sock hijacks the owner's eye
+  # a dead socket, never the live one and never a path of the owner's: `rm -f $dead`
+  # deleted a fixture note when DARK_EYE_RENDER_SOCK pointed at one
   dead=${DARK_EYE_RENDER_SOCK:-$ROOT/dead.sock}
-  refuse_live "$dead"
+  refuse_live "$dead"                               # the live socket keeps its own exit 2
+  case "$dead" in /*) ;; *) die "DARK_EYE_RENDER_SOCK=$dead is not an absolute path — unset it" ;; esac
+  inside "$dead" "$ROOT" ||
+    die "DARK_EYE_RENDER_SOCK=$dead is outside $ROOT — the eye verb creates and removes that path — unset it"
   mkdir -p "$(dirname "$dead")"
   rm -f "$dead"
   exec env DARK_EYE_RENDER_SOCK="$dead" \
     ${gpu:+DARK_EYE_GPU="$gpu"} ${stats:+DARK_EYE_STATS=1} ${seed:+DARK_EYE_SEED="$seed"} \
-    timeout "$seconds" "$BODY/render/target/release/eye-render" --x-offset "$OFFSCREEN" "${extra[@]+"${extra[@]}"}"
+    timeout "$seconds" "$BODY/render/target/release/eye-render" --x-offset "$off" "${extra[@]+"${extra[@]}"}"
   ;;
 
 env)
-  name=s1; [ "${1:-}" = --name ] && name=${2:?--name N}
+  if [ "${1:-}" = --name ]; then name=${2:?--name N}; else name=$(only_sb); fi
   d=$(sbdir "$name"); pid=$(pidof_sb "$name")
   alive "$pid" || die "no sandbox '$name' is up"
   print_env "$d" "$pid"
@@ -192,10 +443,11 @@ status)
   ;;
 
 logs)
-  name=s1 follow=""
+  name="" follow=""
   while [ $# -gt 0 ]; do
     case "$1" in --name) name=${2:?--name N}; shift 2 ;; -f) follow=-f; shift ;; *) die "unknown option: $1" ;; esac
   done
+  [ -n "$name" ] || name=$(only_sb)
   f=$(sbdir "$name")/body.log
   [ -r "$f" ] || die "no log for '$name'"
   tail ${follow:+-f} -n 200 "$f"
@@ -206,7 +458,7 @@ down)
   case "${1:-}" in
     --all) [ -d "$ROOT" ] && for d in "$ROOT"/*/; do [ -d "$d" ] && names+=("$(basename "$d")"); done ;;
     --name) names=("${2:?--name N}") ;;
-    "") names=(s1) ;;
+    "") die "down needs --name N or --all (never a shared default)" ;;
     *) die "unknown option: $1" ;;
   esac
   [ ${#names[@]} -gt 0 ] || { echo "no sandboxes"; exit 0; }
@@ -214,23 +466,11 @@ down)
   for name in "${names[@]}"; do
     d=$(sbdir "$name"); pid=$(pidof_sb "$name")
     kids=$(pgrep -P "${pid:-0}" 2>/dev/null || true)
-    if alive "$pid"; then
-      kill "$pid" 2>/dev/null || true            # a plain kill takes its eye-render with it
-      for _ in $(seq 50); do alive "$pid" || break; sleep 0.1; done
-      alive "$pid" && kill -9 "$pid" 2>/dev/null || true
-    fi
-    for k in $kids; do                            # a kill -9'd eye-render survives: by PID
-      kill -0 "$k" 2>/dev/null || continue
-      kill "$k" 2>/dev/null || true
-      sleep 0.3
-      kill -0 "$k" 2>/dev/null && kill -9 "$k" 2>/dev/null || true
-    done
+    kill_body "$pid" "$kids" "$name" || bad=1
     if [ -r "$d/sink.module" ]; then
       pactl unload-module "$(cat "$d/sink.module")" 2>/dev/null || true
     fi
     rm -rf "$d"
-    alive "$pid" && { echo "body-sandbox: pid $pid survived" >&2; bad=1; }
-    for k in $kids; do kill -0 "$k" 2>/dev/null && { echo "body-sandbox: child $k survived" >&2; bad=1; }; done
   done
   rmdir "$ROOT" 2>/dev/null || true
   exit $bad

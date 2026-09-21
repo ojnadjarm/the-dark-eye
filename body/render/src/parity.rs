@@ -7,7 +7,7 @@ use crate::gpu::{rgba_surface, Renderer};
 use crate::orbit;
 use crate::overlay;
 use crate::rain::Rng;
-use crate::sched::{parse_line, State};
+use crate::sched::{parse_line, Mode, State, MARKS_LINE};
 use crate::sim::Sim;
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -26,7 +26,7 @@ pub struct Region {
 /// less two: the eye body and the caption are held back by the software
 /// renderer's subpixel-antialiased text, which an A8 glyph cache cannot
 /// reproduce (G04 deviation 7).
-pub const REGIONS: [Region; 7] = [
+pub const REGIONS: [Region; 8] = [
     Region { name: "eye body", gate: 31.0 },
     Region { name: "bloom halo", gate: 35.0 },
     Region { name: "iris", gate: 30.0 },
@@ -34,6 +34,7 @@ pub const REGIONS: [Region; 7] = [
     Region { name: "orbiters", gate: 30.0 },
     Region { name: "ring band", gate: 28.0 },
     Region { name: "heard", gate: 30.0 },
+    Region { name: "marks", gate: 30.0 },
 ];
 
 /// The eye body proper — the lids and everything between them.
@@ -58,7 +59,7 @@ struct SceneDef {
 /// The sentence the `speak` scene decodes: sixty words, fully revealed by 9 s.
 const SPEAK: &str = r#"{"type":"speak","text":"the eye keeps watch over the room and reports what it hears in a long steady sentence that has to wrap across several lines before it ends, so that the caption and the noise it decodes out of are both alive in the very same frame, all of it wrapped over several lines and none of them scrolled away yet ok","ms":6000}"#;
 
-const SCENES: [SceneDef; 6] = [
+const SCENES: [SceneDef; 7] = [
     // nothing on top of the eye: the body, the bloom and the iris alone
     SceneDef { name: "idle", msgs: &[], at: 5000 },
     // fully revealed, no noise left, mid-linger
@@ -80,6 +81,8 @@ const SCENES: [SceneDef; 6] = [
     SceneDef { name: "heard", msgs: &[(0, r#"{"type":"heard","text":"que estas haciendo"}"#)], at: 500 },
     // his own words as a caption, gold instead of green, mid-reveal
     SceneDef { name: "heard-caption", msgs: &[(0, HIS_WORDS)], at: 3000 },
+    // five things waiting in five colours, the mode ring, and the `+` for a sixth
+    SceneDef { name: "marks", msgs: &[(0, MARKS_LINE)], at: 500 },
 ];
 
 /// The `heard-caption` scene's sentence: his, so the caption is gold.
@@ -94,7 +97,7 @@ pub fn scene_names() -> Vec<&'static str> {
 /// region has nothing on it in that scene.
 pub struct Row {
     pub scene: &'static str,
-    pub cells: [Option<f64>; 7],
+    pub cells: [Option<f64>; 8],
 }
 
 /// What a run produced, or why it could not run at all.
@@ -175,7 +178,7 @@ fn diff_rgba(a: &[u8], b: &[u8]) -> Vec<u8> {
 /// The regions this scene actually has something in, with their rects. The
 /// bloom halo also drops the caption band: a caption sits on top of the haze,
 /// and its subpixel-antialiased text is the text gate's business, not this one.
-fn regions_for(st: &State, listening: bool, speaking: bool) -> [Option<(Rect, Vec<Rect>)>; 7] {
+fn regions_for(st: &State, listening: bool, speaking: bool) -> [Option<(Rect, Vec<Rect>)>; 8] {
     let cap = st.caption.as_ref().map(|c| c.rect());
     [
         Some((EYE_BODY, vec![])),
@@ -185,6 +188,7 @@ fn regions_for(st: &State, listening: bool, speaking: bool) -> [Option<(Rect, Ve
         (!st.orbiters.list.is_empty()).then(|| (orbit::DIRTY, vec![EYE_BODY])),
         (listening || speaking).then(|| (ring_rect(), vec![EYE_BODY])),
         st.heard.as_ref().map(|_| (clamp_rect(overlay::HEARD_DIRTY), vec![])),
+        (!st.marks.is_empty() || st.mode == Mode::Async).then(|| (clamp_rect(overlay::MARKS_DIRTY), vec![])),
     ]
 }
 
@@ -234,7 +238,7 @@ fn run_scene(def: &SceneDef, gpu: &mut Renderer, dir: &Path) -> Result<Row, Box<
     }
 
     let rects = regions_for(&st_s, listening, speaking);
-    let mut cells = [None; 7];
+    let mut cells = [None; 8];
     for (k, r) in rects.iter().enumerate() {
         cells[k] = r.as_ref().map(|(rect, minus)| psnr(&soft, &hard, *rect, minus));
     }
@@ -247,7 +251,7 @@ pub fn table(rows: &[Row]) -> String {
     for r in REGIONS {
         out.push_str(&format!(" | {}", r.name));
     }
-    out.push_str(" |\n|---|---|---|---|---|---|---|---|\n");
+    out.push_str(" |\n|---|---|---|---|---|---|---|---|---|\n");
     for row in rows {
         out.push_str(&format!("| {}", row.scene));
         for c in row.cells {

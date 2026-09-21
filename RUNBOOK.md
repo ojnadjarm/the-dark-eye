@@ -9,12 +9,12 @@ systemctl --user start|stop|restart dark-eye     # the body (overlay + voice + b
 systemctl --user status dark-eye
 journalctl --user -u dark-eye -f                 # live log
 journalctl --user -u dark-eye -n 50 --no-pager   # "bridge on", "eye up", "voice ready"
-eye health                                       # {"ok":true,"brainListening":..,"micOpen":..}
+eye health                                       # {"ok":true,"brainListening":..,"micOpen":..,"held":..,"mode":..}
 ```
 
 The unit is `body/dark-eye.service`, symlinked into `~/.config/systemd/user/`
 by `bridge/install.sh` and enabled `WantedBy=graphical-session.target`, so the
-Eye comes back on the TV after every login. `Restart=on-failure`, `RestartSec=5`:
+Eye comes back on the screen after every login. `Restart=on-failure`, `RestartSec=5`:
 a crash is back within ~10 s, a clean exit (a `systemctl --user stop`) is not.
 After 5 failed starts in 5 min (`StartLimitBurst`) systemd gives up instead of
 looping forever, and `OnFailure=dark-eye-failed.service` pushes the owner through
@@ -58,6 +58,7 @@ One client at a time: a second connection is refused (`render socket: second eye
 | main → render | `ptt{on}` | the mic rings |
 | main → render | `heard{text}` | the gold `» heard` line — still parsed and drawn, but the body no longer sends it: since the owner's transcript became a `speak{who:"owner"}` caption the one-line marker was the same text twice |
 | main → render | `display{on}` | `false` unmaps the window and arms no timer at all |
+| main → render | `marks{items:[{color,kind}],mode}` | the row of small squares under the eye: one per held reply (`kind:"held"`, the brain's colour) and per visual he has not opened (`kind:"show"`, the Eye's green), five at most then a `+`; `mode:"async"` adds a hollow ring at the left — the row means *waiting to play*, not *quiet*. `mode` is the body's own word (`call` \| `async`), not his (`call` \| `notes`); anything else is read as `call`, so a bad value costs the ring and never the row. Sent on every change of the hold queue, the mode or the unopened visuals, and on every `ready`; a static draw, never the busy rate |
 | render → main | `ready{x,y,w,h,output,backend}` | the window is up, where, and which backend drew it (`gpu` or `software`) |
 | render → main | `outputs[{name,w,h,x,y}]` | on every RandR change — the only display list the body has |
 | render → main | `stats{fps,msAvg,msMax}` | every 5 s, only with `DARK_EYE_STATS=1` |
@@ -82,7 +83,7 @@ but there is no voice, look for `voice worker exited` lines (it respawns after
 | `voiceSid` | 17 | Kokoro speaker — the Eye's voice |
 | `voiceSpeed` | 1.0 | TTS rate |
 | `brain` / `brainColor` | `claude` / `#b04dff` | caption identity on the eye |
-| `canvasZoom` | 1.5 | canvas scale on the TV |
+| `canvasZoom` | 1.5 | canvas scale on the screen |
 | `remotePort` | *absent* | set it to 8644 to start the phone listener on `127.0.0.1`; absent = no remote |
 | `voiceModelDir` | `kokoro-multi-lang-v1_0` | the Kokoro model directory under `body/models`, overridden by `DARK_EYE_VOICE_MODEL_DIR`. The int8 build `kokoro-int8-multi-lang-v1_0` is downloaded and sits beside it — same 53 speakers, 203 MB less resident, and **2.1× the latency** (EF05), which is why fp32 ships |
 
@@ -149,7 +150,7 @@ Two things the voice worker reads from the environment, not from this file:
 10. **The dock path is dead by design** and was not ported to `eye-render`; the
     kept reference page `spec/eye-reference.html` still carries it.
 11. **The display list comes from `eye-render`'s RandR outputs**, not from a
-    toolkit: `outputs[]` on every `RRScreenChangeNotify`. The TV is the largest
+    toolkit: `outputs[]` on every `RRScreenChangeNotify`. The screen the eye lives on is the largest
     output, and it is also the canvas's work area. The `eye up at …` line logs
     where the window landed and on which output.
 
@@ -158,7 +159,7 @@ Two things the voice worker reads from the environment, not from this file:
 The Sony WF-1000XM5 (E07), the AVRCP evdev node, the `mpris-proxy` conflict, the
 push-to-talk sidecar (E08) and the SCO/HFP traps live in **`RUNBOOK-earbuds.md`**.
 
-## Remote (phone) — the page at `remotePort`
+## Remote (the page — phone and desktop) — at `remotePort`
 
 `remotePort: 8644` in `config.json` starts a second loopback listener beside the
 bridge: the page (`body/src/remote-www/`) and `/remote/*`, nothing else. Absent =
@@ -176,9 +177,57 @@ it is issued. Serve proxies from `tailscaled` to loopback, so no ufw rule and no
 bind: `ss -ltnp | grep 8644` must show **127.0.0.1 only**. `/bridge/*` is on 8642 and
 simply does not exist on 8644 — from the tailnet it answers 401, never the bridge.
 
-- **Starting from now.** `GET /remote/cursor` (cookie-gated) answers `{"seq": N}` — the
-  newest reply in the ring — and `/remote/poll` with no `since` starts there, so a
-  reloaded page waits for the next reply instead of replaying the 5-minute backlog.
+- **Starting from now.** `GET /remote/cursor` (cookie-gated) answers `{"seq": N, "boot": "…"}`
+  — the newest reply in the ring, and the name of this life of the body — and `/remote/poll`
+  with no `since` starts there, so a reloaded page waits for the next reply instead of replaying
+  the 5-minute backlog.
+- **A restart under an open page (M20).** The ring counts from 0 again, so every seq a page
+  still holds names a reply that is gone: a ▶ pressed on one asked the body for *another*
+  reply's words, which the page could not tie to the press, so nothing played and the press
+  stayed live — that was the 2026-09-15 defect. `boot` is how the page knows. It keeps the id
+  from its login and re-reads `/remote/cursor` **whenever it starts polling again** — the
+  reconnect after a poll dies, and the resumption after the tab was in the background, which is
+  the case his phone is in almost every time: a hidden tab leaves the poll loop *cleanly*, so
+  nothing marks it offline and the first poll on his return would otherwise go out with the dead
+  life's `since` and swallow every reply of the new one (M20-fix). Every `/remote/poll` answer
+  carries the life that answered it in an `X-Eye-Boot` header, because a restart *between* two
+  polls takes an idle socket and nothing else — the next poll simply succeeds against the new
+  life, and under load that is what happened — so the page reads the header on every answer and
+  re-reads the cursor when it changes; a page whose login read never answered holds no life at
+  all and takes the first one it reads, from that life's cursor, instead of leaving restart
+  detection off for as long as he keeps the page open. The cursor read is bounded (5 s): the
+  poll loop is held while it is made (M21). A different `boot` means the
+  transcript belongs to a dead body, so the stale ▶ are dropped — each line giving up its words, which are all that is left of it —
+  and the status line says the Eye restarted. Anything the page
+  can still play from its own queue keeps its glyph. **The answer that changed the life is read
+  before the resync and processed like any other (M21-fix)**: the reply it carries is the one he
+  is waiting for, and dropped there it never came back, because the new cursor is already past
+  it. For the same reason a restart resumes from the **bottom** of the new life, not from its
+  cursor head — what that life has already said and he has not heard is numbered below it. A
+  mismatch that neither changes the life nor brings a reply (a cached or unanswered
+  `/remote/cursor`) waits 1 s and doubles to 30 s: without that guard the page polled as fast as
+  the radio allowed — 3699 polls in 25 s, measured — with the status line looking normal. Every
+  JSON lane answers `Cache-Control: no-store`, because one cached cursor answer is a dead life's
+  cursor. And `POST /remote/ack` carries the life its reply came from: a tray item kept across a
+  restart acks a seq that names *another* reply here, and the body refuses it.
+- **His voice takes the page's (M19).** The page has a barge-in of its own now, because the mic
+  and the mouth share one audio context: **tapping the eye to talk stops the reply that is
+  sounding** — and the one a stopped context left paused mid-word, which opening the mic used to
+  resume out loud into it — before the mic opens, and **a reply that lands while a turn is open is
+  never played into it** either. What is stopped is not acked: it goes back to the head of the
+  tray with its ▶ **pressable again** (a glyph in the tray is by definition unheard — M20's
+  idempotence guard used to leave the cut reply's ▶ dead and the reply unreachable, M20-fix; the
+  press finds what is waiting there **by its line**, not by its seq, because a replay he asked for
+  is played onto that line under a new one — keyed by seq it queued a second copy, M20-fix2) and
+  the next press plays it **from the beginning**, the way the room drops the
+  remainder of a reply he talks over (`hold.js` — "The mouth waits" below). The audible half was
+  the lesser one — `getUserMedia` cancels most of it — and the real damage was silent: the
+  resumed voice ran to its end while he was talking, which acked the reply and took its ▶,
+  losing a reply he never heard.
+  The cost of the fix is one re-listen. While the turn is open the tray is still counted in ▶ on
+  the lines, but the status line stays his (*Tap again to send*) and the count comes back when the
+  turn closes; an interrupted line also stops unscrambling — its words resolve and wait, instead
+  of running out the dead buffer's clock as noise.
 - **The Tailscale-only exception.** Everything else on this box listens on the LAN
   address *and* the tailnet; this one does not, by the owner's decision: the phone
   page is reachable over Tailscale and nowhere else, so a device on the house Wi-Fi
@@ -198,24 +247,115 @@ simply does not exist on 8644 — from the tailnet it answers 401, never the bri
 - **The gesture.** Tap the disc to start, tap it again to send — the earbuds'
   gesture, not a walkie-talkie's. While it records the disc is gold; the page records
   at whatever rate the phone's mic runs, resamples to 16 kHz in an `AudioWorklet` and
-  streams raw Int16 PCM as it goes (3 MB cap, ~90 s). His words appear while he is
+  streams raw Int16 PCM as it goes (10 MB cap, ~300 s). His words appear while he is
   still talking — see "The words that grow on the phone". His line lands gold, the
   Eye's violet. On a desktop the mouse works the same way, and
   so does the space bar, one press on and one press off. Nothing is lost if he never
-  taps twice: 90 s on the clock stops and sends by itself (the body's own mic has the
-  same failsafe), and so does leaving the page or a cancelled pointer. The first tap
-  is also what unlocks audio playback on iOS — until it happens a reply shows a ▶
-  button instead of playing.
+  taps twice: 300 s on the clock stops and sends by itself, and so does a cancelled
+  pointer or the mic track ending. The first tap
+  is also what unlocks audio playback on iOS — and until something unlocks it, a reply
+  that arrives cannot be played, so it carries a ▶ and the press on that glyph is itself
+  the gesture that unlocks the context (see "Hearing a reply").
+- **Hearing a reply (M12, M17, M20).** A ▶ glyph trails an Eye line **only while something of
+  that reply is unheard**, lit in the active channel's colour — so it always reads as a full
+  tray, never as anything held back. In **audio notes mode** the glyph *is* the line: a held
+  reply arrives with no words at all, held exactly as a call-mode reply waiting for its voice is
+  (M20 — the words on the page before he pressed anything were the second half of the
+  2026-09-15 defect). What is waiting is the number of glyphs and the count beside them, and
+  which channel it came from is their colour; the press starts the words and the voice together,
+  the text resolving on the voice's own clock, which is what a live reply has always done. In
+  call mode it is normally absent, because the reply plays as it lands; it appears there only when the page **could not** play it — an audio context still
+  locked on a phone just opened, where decoding succeeded and nothing was heard (`offer()` is the
+  one place that knows this, and is where the glyph is put) — and **every** reply queued behind
+  that one is glyphed in the same breath, because the status count is literally the number of ▶
+  on the page (`waiting()`): the count can only be true if the presence is complete. One press
+  drains that whole queue, each line losing its glyph as it ends; in audio notes mode nothing is
+  queued in advance, so there each line is released by its own press. If the context stops
+  **mid-word** — the phone taking a call — no `onended` fires, so the paused reply puts its own ▶
+  back and the press on it is what resumes it, and a reply that **arrives** while it is stopped
+  joins the same tray with its own ▶ and its words shown, rather than being counted as "more
+  waiting" behind a voice nothing is sounding. **A reply interrupted once it has started keeps
+  the words it was given:** M20 hides a held reply's words until the press, but a reply he barges
+  in on (M19) or a context stopped mid-word is past that point — `offer()` re-reveals it, glyph
+  and all, so an interrupted line is never left blank or scrambling on a dead buffer's clock.
+  A device that cannot open an audio context at all
+  says "This device will not play sound" and the ▶ stays pressable for a second try, and the same
+  device tapping to **talk** is told the audio will not open, not that the mic was refused.
+  So "Ready" is never shown over a line on the page whose reply is unheard — and that is the whole
+  claim: a reply spoken while the page was **closed** never appears at all (a cold open starts from
+  the newest seq, see "Starting from now"), so there is no line, no ▶ and the status reads "Tap to
+  talk". Those are released out loud by "talk to me", which is the design, not a hole in the count.
+  The glyph goes the moment
+  the reply plays to its end, and the press it answers takes the pressed line's glyph with it.
+  While the reply's bytes are still on the ring the glyph plays those same bytes; for one that
+  has none — spoken only in the room, or its audio dropped for the byte budget — it posts
+  `POST /remote/replay {seq}` and the body answers with the voice it made at park time, or
+  **says those words again to the page alone** — the room is never made to repeat itself. `replies.find(seq)` is
+  the authority: a seq the ring no longer holds is a 400, and a second press inside a second
+  **from the same device** is a 429 — the gap is that device's alone, and a press the ring
+  refused never starts it. No new retention, no disk, no bigger ring.
+  A replay carries `bypass` into the hold, so **audio notes mode does not swallow it** — this
+  is how he hears a reply the mode deliberately did not speak, with the room still silent —
+  while his own voice and the 1.5 s after it still hold it back. Since M15-fix a `bypass` item
+  waits at the **head** of the queue, so a ▶ he pressed is heard **before** whatever is parked:
+  he asked for that one, he gets that one now.
+  **The voice is made when the reply is parked (T2, T2-fix).** In audio notes mode the reply is
+  already written when it is parked, so its voice is synthesised **then** and the press streams
+  bytes that exist: press → first sound measured **129–189 ms** for a 12/40/120-word reply
+  (131/497/1481 kB of WAV, load 6.5) against 1.2–12.7 s when the press started the work — a
+  **stub-voice** measurement: real byte volumes and the real ring, fetch, decode and playback in
+  headless Chromium, but a sine tone where Kokoro's bytes would be. It is the same Kokoro run,
+  moved earlier — about 3.4–4.6 core-seconds and 48 kB per spoken second, wasted only on a reply
+  he never plays. **Every** parked reply's voice is made, not only the first: the mouth-idle check
+  counts what the hold will actually say, and a reply parked for his ▶ is not that (T2-fix; before
+  it, parked items blocked the queue, so everything after the first note waited and a 5 s
+  re-check timer stayed armed for as long as they did). `eager.js` keeps **one** job in flight,
+  submits it only while the mouth is idle, holds the queue while `loadavg[0] > 8`, and its one 5 s
+  re-check timer exists only while a job is waiting — measured at 0.0 % of a core both with an
+  empty queue and with **three replies parked** (T2-fix). Only the **active** channel's replies
+  are made (a channel he is not on never reaches `say()`), the WAV lives on the ring item in
+  memory and **never on disk**, and the bytes are bounded: the ring's 20 slots, 4 MB a reply (past
+  that nothing is made and the press synthesises) and 12 MB in total, where the audio he has
+  **already heard** goes first and then the **oldest unheard** — never the bytes a press is
+  fetching right now, and a reply's words, its line and its ▶ always stay. A press republishes
+  the bytes it played, so its copy is charged to the budget once, not twice. A press that lands
+  *while* the job runs waits on that one run — never a second — and nothing is made eagerly at
+  boot: the first press after a restart synthesises.
+
+  **One press, one synthesis (M20).** The glyph goes `disabled` the moment its replay is asked
+  for and stays down until those words come back, are refused, or fail to arrive inside
+  `WANTED_TTL_MS` (60 s, when it comes back with a line saying so) — so pressing it again, however
+  many times, asks the body for nothing more. The status line says *Saying that again* while it
+  works. A press on a line whose reply is still in the page's own tray plays **what is waiting
+  there** — found by the line, not by the seq (M20-fix2) — never a new synthesis. A press that
+  is **refused** (the seq is off the ring) or that misses the TTL gives the line's words back as
+  it returns the ▶ — they were hidden for a voice that never came (M20-fix) — and the body's own `REPLAY_GAP_MS` (1 s, per
+  device) is not a refusal: two glyphs pressed inside that second get *One moment · ▶ again* and
+  the press is **not** consumed, instead of the untrue "that reply cannot be said again".
+  **What a replay costs:** a reply whose bytes are on the ring is replayed from them and costs
+  nothing. A reply that has aged off the ring, or whose voice was never made, is said again from
+  scratch — one more slot on the ring, pushing the oldest reply out sooner.
+  It is **not** a second transcript line: the re-synthesised words are played and revealed on
+  the line he pressed, because it is the same reply (M20; until then it landed as a new line,
+  which is how five presses put five copies of one reply on his page).
+  **One tie, and its two holes.** A replay comes back re-synthesised under a **new** seq, so the
+  page ties it to the press by its **words** (`wanted` → `claim`, which answers *which press* those
+  words are for, so the replay is played and shown on that line). Two consequences, both accepted,
+  neither a code fault: an **unasked** reply whose words match a pending press consumes that press,
+  so the real replay then lands as its own held reply with its ▶ — he hears the right words, once,
+  at the right moment; and if one sentence of a synthesis errors, the replay's joined text is a
+  **subset** of what was pressed for and is never claimed, so it lands with its own ▶ and the
+  pressed line's glyph comes back at the TTL for another try.
 - **The words that grow on the phone (R06).** The page does not wait for the tap to
   send: every second it posts what the worklet has handed it to
   `POST /remote/stream?utt=<id>&seq=<n>` (octet-stream, cookie-gated), and the second
   tap is `POST /remote/audio?utt=<id>` whose body is only the tail — an empty one
   means *finalize what you have*. The body feeds those blocks into **one partial ear
   per utterance** (`src/remote-ear.js` over `src/partials.js`, the same growing-window
-  local-agreement ear the TV caption uses), and the words it settles ride back on the
+  local-agreement ear the on-screen caption uses), and the words it settles ride back on the
   long-poll the page already holds open as `{seq, utt, partial}` items. The page grows
   one gold line, append-only, and the final transcript replaces that same line — never
-  a second one. The TV is never engaged for a phone turn, and the local mic path is
+  a second one. The screen is never engaged for a phone turn, and the local mic path is
   untouched.
   - **The final** is the ear's stitched transcript, with the empty-final fallback: what
     he watched appear is never thrown away. Measured on a 12.9 s clip: **0.76-0.91 s**,
@@ -230,17 +370,98 @@ simply does not exist on 8644 — from the tailnet it answers 401, never the bri
   - **One utterance in flight** per body: a new `utt` closes the one before it, the
     buffer is freed on the final tap, and a stream nobody finalised is dropped after
     **2 minutes** idle. Past the cap the stream route answers 413 and the page stops
-    and sends what it has.
+    and sends what it has. The cap is one constant, `MAX_SAMPLES` in
+    `src/remote-ear.js` (5 M Int16 = 10 MB ≈ 300 s), and `remote.js` takes its
+    `AUDIO_MAX` from it — the buffer doubles from 64 K samples, so a turn near the
+    cap holds **33.5 MB** of Float32 in the body while it is live, with about
+    **50 MB** transient for the moment the last grow copies the old buffer into the
+    new one, and nothing after the tap.
   - `journalctl --user -u dark-eye` shows a `partial (Nms)` line per decode and then
     one `remote audio:` + `heard (Nms)` pair, as a mic turn does.
+- **A turn survives a tab switch (M11).** The page no longer ends the turn when it
+  goes hidden — that line was ours, not the browser's. While it records, the tab
+  itself says `● listening` with a gold iris in the favicon, so a turn he walked away
+  from is visible in the tab strip; both revert when the turn ends. The upload is
+  counted off the worklet (one post per 32 blocks ≈ 1 s), never a `setInterval`, so
+  background timer throttling cannot slow it, and the reply poll stays open while the
+  tab is hidden, a turn is in flight or a reply is still coming. What each surface
+  really does:
+
+  | Surface | A hidden tab / a backgrounded app |
+  |---|---|
+  | Desktop Chrome, Firefox | keeps capturing; a live mic track is exempt from freezing |
+  | A browser window merely covered (Linux) | never *was* hidden — no occlusion tracking on X11/Wayland |
+  | Chrome Android | keeps capturing, with its own mic notification in the shade |
+  | iPhone Safari | the platform **mutes** the track; the page says so and resumes on return |
+  | The buds (`dark-eye-ptt`) | do not care at all — they never touch the page |
+
+  On the iPhone's `mute` the page stops posting, keeps the same `utt` and shows *Mic
+  paused by the phone*; `unmute` resumes on the same turn. A mute is given 90 s —
+  `MUTE_MAX_MS = EAR_IDLE_MS - MUTE_GRACE_MS` on the page, 30 s inside the body's
+  2-minute idle window — and then the turn ends with everything that was streamed and
+  says so ("the mic stayed paused too long"; nothing the page shows him says *mute*). The two must never be equal: at 120 s the body would drop the buffer first
+  and only the tail would be transcribed.
+- **Keep visible (M11, desktop).** Where the browser has Document
+  Picture-in-Picture (Chrome 116+; **not** the Firefox 154 on this machine, so the
+  glyph does not appear there) one small glyph in the page's top-right corner moves the eye,
+  its caption and the disc into a small
+  always-on-top window, and the page's own animation frames move with them; it lights
+  in the active channel's colour while that window is open, and closing it puts them
+  back. The glyph itself stays in the tab — it is the handle on that window, not part of it. The mic, the worklet and the poll never move — they stay in the
+  tab and do not care. Where the API is absent the button is simply not shown.
 - **It is a plain web page.** Open it in the browser (on iOS, Safari); there is no
-  PWA, no manifest and nothing to install.
+  PWA, no manifest and nothing to install — by his call (M11), the tab is enough.
+- **The caption: two words, and nothing that reads as blocking (M17, was the chips, M04).**
+  Under the eye, set like a caption of it rather than a control: **the channel** in its own
+  colour, then **the mode** in his own words — `call` or `audio notes`. No pill, no border, no
+  fill; the mode word is lit while it is audio notes and carries a **hairline underline** —
+  the one quiet cue that it is his to tap, since it is the only setting he can change without
+  his voice and `:hover` says nothing on a phone. Every ▶ keeps a 44 px touch target around
+  its 22x18 picture. Nothing on the page claims to block
+  anything: there is no mute glyph, no crossed speaker and no *mute*/*silenced*/*suppressed*
+  in any label, title or status line (a test on the served page pins that, and pins the two
+  mode words). The only remaining `mute` in the source is the phone's own
+  `MediaStreamTrack` event and the internal clock named after it — his microphone, not the Eye's
+  mouth.
+  - **The channel word** — `POST /remote/active {brain}` (cookie-gated; the answer is the
+    roster, 400 for an unknown name). With two channels the word **switches**; with three or
+    more it blooms the roster upward out of the eye's glow as a plain list (`Escape` closes it).
+    On a desktop `1`..`9` still pick one. The active channel's colour is the accent: the iris,
+    the caption word and every ▶.
+  - **The mode word** — `POST /remote/mode {mode}` with **his** word, `call` or `notes`;
+    `GET /remote/mode` reads it. The body's own `async` is a **400** here, so the render
+    socket's word can never come back through the page; `main.js` converts at the boundary
+    (`onMode: toWire(setMode(fromWire(m)))`). One global setting of the Eye, never per channel:
+    **a channel switch never moves it**, and the page posts nothing when the body pushes one.
+  - **One lane for both.** The page reads the roster and the mode once at login
+    (`GET /remote/brains`, `GET /remote/mode`); every later change — his voice, `eye mode`,
+    `eye talk-to`, another phone — rides the long-poll already open as a
+    `{seq, brains, active, mode}` item, so there is **no new polling loop**. `main.js` publishes
+    it with `replies.brains({...roster, mode: toWire(mode.mode)})` from both `setActive` and
+    `setMode`.
+  - **In audio notes mode** a reply never plays on arrival; it lands with its ▶ and is not
+    acked until he plays it, and the status line counts what is there (`3 waiting · ▶ to play`).
+    In call mode a reply plays as it lands, exactly as before.
+  - **A 401 ends the turn (M17).** A refused `/remote/stream` mid-flush used to disable the
+    talk control while leaving the turn open, so after logging back in the disc did nothing
+    until a reload. `locked()` now drops the turn like a timed-out pause does — the mic off,
+    the tail discarded, the growing line removed — so his next tap opens a new one.
 - **The `--to` rule.** `eye speak <text>` goes back to wherever he last spoke from,
   so a question asked from the phone is answered on the phone by itself. Force it
-  with `--to remote` (phone only), `--to local` (the buds/TV) or `--to both`. A
+  with `--to remote` (phone only), `--to local` (the buds/screen) or `--to both`. A
   remote transcript reaches a brain as `VOICE [remote]: …`.
-- Replies wait in memory for 5 minutes (20 at most), so a page reopened inside that
-  window replays what it missed. `journalctl --user -u dark-eye` shows `remote on
+- **Long utterances arrive in pieces.** Claude Code's Monitor keeps at most 500
+  chars of one stdout line and drops the rest as `...(truncated)` (measured
+  2026-09-14: 500 intact, 550 cut). So `eye listen` / `eye listen-loop` print a
+  transcript as lines of at most 300 chars split on words: the first `VOICE: …` /
+  `VOICE [remote]: …`, the rest `VOICE (cont): …` / `VOICE [remote] (cont): …`,
+  written in one go so the Monitor batches them (200 ms window) into one event.
+  Override the width with `EYE_LINE_MAX=<n>`. A running `listen-loop` picks the
+  change up only when re-armed (stop the Monitor, `/eye` again) — the unit is not
+  involved. Test: `bash bridge/tests/listen-loop-split.test.sh` (stub bridge, no body).
+- Replies wait in memory, 20 at most: one he has **heard** for 5 minutes after it, one he has
+  **not** until the ring pushes it out — the tray is his to come back to (T2; before it, a note
+  older than five minutes answered his ▶ with "that reply cannot be said again"). `journalctl --user -u dark-eye` shows `remote on
   127.0.0.1:8644` at boot and one `reply <n> for the phone` line per utterance.
 - **The whole loop with no phone**: `bash body/test/e2e-remote.sh` — synthesises a
   sentence, uploads it as the page's Int16 PCM, checks the transcript and the
@@ -282,6 +503,21 @@ software-vs-GPU table, is in `body/scripts/BASELINE.md`.
 | voice worker (fresh) | 0.0 | 1373 | 1351 |
 | **body total** | **2.2** | 1544 | 1444 |
 | **body total (excl. voice worker)** | **2.2** | 171 | 93 |
+
+The notes brain (M05b, `notes-brain.service`: `claude --name notes` + its `eye listen-loop`
+Monitor, `--strict-mcp-config`), a 30 s sample after 5 min without words, 2026-09-14 23:57, in a
+throwaway tmux on a fixture vault:
+
+| Process | CPU % of one core | RSS MB | PSS MB |
+|---|---|---|---|
+| notes session (claude + listen-loop) | 0.57 | 261 | 202 |
+
+First start of `notes-brain.service`: the owner (or the orchestrator) runs `tmux attach -t notes`,
+accepts the trust dialog once (`~/agents/notes` is a new project directory), and types
+"Start: arm the ear." — `ExecStartPost` types that line by itself on every later start.
+
+Without `--strict-mcp-config` the session also carries the user's playwright-mcp server:
++106 MB RSS / +69 MB PSS for nothing the notes brain uses.
 
 `gpu render busy 1.19 %`, `rc6 83 %`, `gt_act_freq 0 MHz`. The voice worker's 1373 MB is a
 *fresh* worker: ORT's CPU arena only grows, so a day of turns used to take it to 1.7 GB and an
@@ -368,7 +604,7 @@ that fails at runtime falls back to cairo and to 30 with it, unless the variable
 the test hook that exercises the fallback (never set in the unit).
 Set it on the unit with a drop-in
 (`systemctl --user edit dark-eye`, `Environment=DARK_EYE_IDLE_FPS=…`); node passes its
-environment to `eye-render`. Owner's call 2026-09-06: 8 fps looked choppy on the TV and
+environment to `eye-render`. Owner's call 2026-09-06: 8 fps looked choppy on the screen and
 smoothness now outranks the ≤1 % idle target of `PLAN-LOWRES.md` §3.1.
 
 | backend · idle fps | eye-render CPU % of a core | gpu render busy | rc6 | msAvg / msMax |
@@ -392,12 +628,12 @@ restarts, TV off, 60 s per row, GPU backend throughout):
 | **60 — shipped, the owner's standing choice** | **21.2 %** | **1.07 %** | **2.04 %** | **24.3 %** |
 | 30 | 11.7 % | 0.58 % | 1.40 % | 13.6 % |
 | 15 | 5.9 % | 0.33 % | 0.80 % | 7.0 % |
-| 8 (the old default, already rejected — choppy on the TV) | 5.1 % | — | 0.9 % | — |
+| 8 (the old default, already rejected — choppy on the screen) | 5.1 % | — | 0.9 % | — |
 
 The line is `gnome-shell ≈ 2.6 % + 0.31 % per fps`: the compositor's cost is one main-loop
 iteration times the rate, so halving the rate halves all three columns together and no change to
 how the eye draws can move them. **Nothing here has been changed** — 60 fps stands because
-smoothness on the TV outranks the idle budget, and the rate is the owner's decision alone. This
+smoothness on the screen outranks the idle budget, and the rate is the owner's decision alone. This
 table exists so the decision can be revisited with numbers instead of a guess; ≤ 10 % for
 gnome-shell needs ≈ 24 fps or less.
 
@@ -535,10 +771,10 @@ production eye flap and vanish on 2026-09-06 15:46 (E29): `net.createServer` acc
 number of clients, so a hand-run renderer on the live socket simply takes the eye over.
 
 ```bash
-eval "$(body-sandbox up --eye offscreen --stats --audio null)"   # ~0.2 s
+eval "$(body-sandbox up --name t1 --eye offscreen --stats --audio null)"   # ~0.2 s
 eye health                                # {"ok":true,...} — DARK_EYE_CONFIG points at the sandbox
 MEASURE_PIDS=$MEASURE_PIDS bash ~/the-dark-eye/body/scripts/measure.sh --state idle --seconds 20
-body-sandbox down                                                 # ~0.15 s, exits 1 if anything survived
+body-sandbox down --name t1                                       # ~0.15 s, exits 1 if anything survived
 ```
 
 Everything the unit and a hand-run body used to share is redirected into
@@ -550,19 +786,81 @@ Everything the unit and a hand-run body used to share is redirected into
 | render socket (`render.js`) | `render.sock` (`DARK_EYE_RENDER_SOCK`) |
 | orbiters (`orbiters.js`) | `orbiters.json` (`DARK_EYE_ORBIT_FILE`) — the live set is never replayed or rewritten |
 | remote sessions (`remote.js`) | `state/` (`XDG_STATE_HOME`) |
-| the eye | `--eye offscreen` = `eye-render --x-offset -1400` (x = -390, off the 1366-wide TV); `--eye off` = no renderer at all |
-| audio | `--audio null` loads a `module-null-sink` `eye_sandbox_<name>` and the body's `pw-cat` gets `--target` on it (`DARK_EYE_SINK`) — never the owner's sink |
+| the TV override (`display.js`) | `tv-override.json` (`DARK_EYE_TV_OVERRIDE_FILE`) — an `eye tv off` inside a sandbox never reaches the owner's set |
+| the eye | `--eye offscreen` = `eye-render --x-offset <derived>`, **computed from RandR at launch**, never a constant: `window.rs place()` draws at `largest.x + largest.w - 340 - 16 + offset`, so an offset calibrated for one output maps *inside* another — the old fixed `-1400` put the eye at **x = 164 on the 1920-wide laptop panel whenever the TV was off**, and an eye was drawn on his screen. `up` writes `min over outputs of (minx - (x + w) + 16)` minus one window width (one output 1920 wide → `-2244`, window at x = -680, right edge -340), and `check_env` accepts an offset between the floor `-32768` and that bound **recomputed now**. So the stored offset stays legal while the outputs stay as they were or lose one, and an output further right *lowers* the bound: plugging the TV back in (bound `-1904` → `-3270`) makes a stored `-2244` illegal and `restart` **refuses with a non-zero exit** — fail-closed, `down` and `up` again. The bound is derived inside the script from plain `xrandr` and is not readable or settable from the caller's environment. `--eye off` = no renderer at all |
+| audio | **`--audio null` is the default**: a `module-null-sink` `eye_sandbox_<name>`, and the body's `pw-cat` gets `--target` on it (`DARK_EYE_SINK`) — never the owner's sink. **`--audio none` is the explicit opt-in and is NOT audio-isolated**: it writes no `DARK_EYE_SINK`, so the body speaks into the owner's default sink, out loud in his room (it was the default until 2026-09-15, and `up --name t1` + `eye speak` is how a sentence got spoken there). Pass it only when nothing can speak |
 | killing | `body.pid`; `down` kills node by PID, then any surviving `eye-render` by PID, unloads the sink, removes the dir |
 
-Verbs: `up [--name N] [--eye off|offscreen] [--gpu 0|1] [--stats] [--audio none|null]`,
+Verbs: `up [--name N] [--eye off|offscreen] [--gpu 0|1] [--stats] [--audio null|none]`,
 `eye [--gpu 0|1] [--stats] [--seed N] [--seconds N] [--demo --busy | --dump PNG --scene S]`,
-`env`, `status`, `logs [-f]`, `down [--name N|--all]`.
+`restart --name N`, `env`, `status`, `logs [-f]`, `down --name N|--all`.
 
-- `body-sandbox eye` is a bare `eye-render` on a dead socket and is **always**
-  `--x-offset -1400`; no other offset is accepted (`-700` puts the eye at x = 310, on the TV).
+- `restart --name N` stops the sandbox body and starts it again on the **same dir, config, port
+  and sink**, so everything the body persists survives — `mode.json`, `active.json`, `state/`.
+  It is how a "this is read back on boot" check is run by hand: `eye mode notes`,
+  `body-sandbox restart --name t1`, `eye mode` → still `notes`. `up` is the opposite: it wipes
+  the dir, so the same sequence with `up` comes back `call`. `restart` needs `--name N` (no
+  shared default), refuses with a non-zero exit if that sandbox is not up, and prints the new
+  exports (`BODY_PID`/`MEASURE_PIDS` change) — eval it like `up`.
+- `down` needs `--name N` or `--all`; `env`/`logs` need `--name` unless a single sandbox exists.
+  An unnamed `up` gets `sb-<pid>`, never a shared name; `up` on a name already up fails and prints
+  `export DARK_EYE_CONFIG=/nonexistent; false`, so an eval'd session cannot reach the live body.
+  Guards test (stub node, no unit): `bash ~/the-dark-eye/bridge/tests/body-sandbox-guards.test.sh`.
+
+- `body-sandbox eye` is a bare `eye-render` on a dead socket and is **always** the derived
+  offscreen offset; no caller-supplied `--x-offset` is accepted. Its dead socket must be inside
+  `$XDG_RUNTIME_DIR/dark-eye/sandbox` (the verb does `mkdir -p` and `rm -f` on it, and an ambient
+  `DARK_EYE_RENDER_SOCK` pointing at a note **deleted that note**), and `--dump` takes an absolute
+  `*.png` inside that root or `$TMPDIR`/`/tmp` only — never a path in his tree.
   Scenes the binary has: `caption`, `resolved`, `heard-caption`, `rings`, `agents` — **there is
   no `idle` scene**, despite older tickets.
 - `up` and `eye` **exit 2** if the socket resolves to the live `render.sock`.
+- `up` and `restart` validate the whole saved `body.env` before launching it: only the keys `up`
+  itself writes are accepted (any other key is refused, not isolated), every path-shaped key must
+  be **non-empty and absolute** and canonicalise (`readlink -m`, so a traversal through a missing
+  component is caught) inside the sandbox dir, `DARK_EYE_SINK` must be that sandbox's own null sink
+  and `DARK_EYE_RENDER_BIN`/`_ARGS` the offscreen pair. A refused `restart` leaves the running body up.
+- **Present is not set.** Every consumer reads `$KEY || <the owner's live path>`, so an *empty*
+  value is an absent one — and `readlink -m` resolves a relative value (`""` included) against the
+  caller's cwd, so with cwd inside the sandbox dir (`cd <dir>/state` to read state or logs) an empty
+  `XDG_CONFIG_HOME` used to pass containment and the body then read *and rewrote* his real
+  `config.json`. Empty and relative are both refused now.
+- The sandbox dir must **be** `$XDG_RUNTIME_DIR/dark-eye/sandbox/<name>`: `up` and `restart` refuse
+  a `<name>` that resolves elsewhere, because a symlink there would move the whole sandbox — and
+  containment with it — to the link's target.
+- Known, not guarded: `check_env` → `start_body` is a time-of-check/time-of-use window. A component
+  inside the dir swapped for a symlink after validation is not re-checked before the launch. And
+  `real_sb` resolves **both** sides, so a symlinked `$ROOT` itself — or a symlinked
+  `$XDG_RUNTIME_DIR/dark-eye` above it — still moves the whole sandbox tree (and containment with
+  it) to the link's target; only a symlinked `$ROOT/<name>` is caught. Two more:
+  `window.rs place()` ends `(x as i16, y as i16)`, so an offset the check let through below
+  `-32768` **wraps back onto a screen** (`-66000` → x = 1100 on the 1920-wide panel, an eye on
+  his laptop) — that truncation is why `off_ok` has a floor, not only a bound, and the floor is
+  the guard, not the renderer. And every containment claim here is relative to `$ROOT` =
+  `$XDG_RUNTIME_DIR/dark-eye/sandbox` (and `--dump`'s `$TMPDIR`): a caller who sets
+  `XDG_RUNTIME_DIR` or `TMPDIR` moves the tree the script confines things *to*, which is what
+  the tests rely on and what a hostile caller would too. Three more:
+  the offscreen claim holds at **validation time only** — `eye-render` re-places itself on
+  `RRScreenChangeNotify` (`body/render/src/main.rs:394` → `win.replace_at(&outs, x_offset)`)
+  with the stored offset, and `place()` measures from the *largest* output, so an output added
+  to the left of the panel can bring a **running** body's window onto a screen with nothing
+  re-checked (the TV at 1366x768 at x = -1366 with a stored -2244 leaves an 84 px strip on it;
+  a 4K TV at x = -3840 becomes the largest output and the eye lands fully inside it) — take the
+  sandbox down before changing outputs; the null sink is loaded into the **owner's live audio
+  server** (`pactl load-module module-null-sink`) and unloaded by `down`, so a body killed
+  without `down` leaves the module behind in his audio state; and `check_env` validates
+  `body.env` only, never the sandbox's own `config.json`, so a `remotePort` re-added to the copy
+  survives a `restart` and that body opens a second loopback listener — `up` always strips it,
+  so the "no second tailnet listener" claim is `up`'s, not `restart`'s.
+- The **set** is required, not only the value of whichever key is there: an absent key falls back
+  to the owner's live tree (no `XDG_CONFIG_HOME` → his real `config.json`, real port, real secret,
+  real `remotePort`; no `DARK_EYE_ORBIT_FILE`/`_ACTIVE_FILE`/`_QUIET_FILE`/`_MODE_FILE`/`_TV_OVERRIDE_FILE`
+  → his live `$XDG_RUNTIME_DIR/dark-eye/*.json`; no renderer key → the real `eye-render` at its
+  on-screen default). So all nine keys `up` writes must be present, plus exactly one renderer shape
+  (one `--x-offset` inside the derived range `-32768`..bound, alone, or `/bin/sleep` with `infinity`), plus `DARK_EYE_SINK` whenever the
+  sandbox loaded a null sink. `restart` backfills every key an older `body.env` predates before it
+  validates — a sandbox from an earlier version still restarts — and confirms the pid it found is
+  really that sandbox's body before it writes anything.
 - Sandbox processes carry `DARK_EYE_SANDBOX=<name>`; `sentinel-runaway` rule 3 tells them from a
   hijack and still reaps one older than 2 h. `body-sandbox down` is the normal exit.
 - The sandbox uses the **live display** with the offscreen offset, not a private `Xvfb`:
@@ -571,8 +869,13 @@ Verbs: `up [--name N] [--eye off|offscreen] [--gpu 0|1] [--stats] [--audio none|
   on this box belongs to the `moodle-shared-selenium-1` container — leave it alone.)
 - Test: `bash ~/the-dark-eye/body/test/body-sandbox.test.sh` (also run by
   `bash ~/agents/bin/tests/run.sh`) — up, isolation of all four paths, live `render.sock`
-  inode+mtime unchanged, no new `eye up` in the unit's journal, the sandbox window at
-  x ≤ −300, the voice on the null sink, then `down` with no residue. ~15 s, no sound, no pixels.
+  inode+mtime unchanged, no new `eye up` in the unit's journal, the voice on the null sink, then
+  `down` with no residue. ~15 s, no sound, no pixels. The offscreen check is **geometric and never
+  skipped** (it used to be skipped whenever the TV was off — the one condition in which `-1400`
+  was on his screen): the window rect at the body's own offset is intersected against every
+  RandR output that has a mode, and so is every position actually mapped — the renderer's own
+  `[eye-render] window … at x,y` line plus anything `pc win list` shows for this body (mutter
+  does not list an override-redirect window, so the log line is the one that sees it).
 
 ## `agent-preflight` — the first command of every Dark-Eye session (EF06)
 
@@ -594,6 +897,149 @@ cgroup; one carrying `DARK_EYE_SANDBOX` is listed separately as a sandbox, not a
 Without `--brief` it also prints the three rules (kill by PID · never restart without the
 orchestrator · the live socket, orbiters and remote sessions are off limits) and the three
 commands above.
+
+## Brains — named buses, one active (M01)
+
+`body/src/brains.js`. A brain is a name (`[a-z0-9-]{1,16}`) with its own listen bus, a
+colour, a Kokoro voice and a heartbeat. `main` exists from boot (colour `brainColor`, voice
+`voiceSid`, both from config); every other name is registered by its first `listen`. His words
+go to the **active** brain's bus only; the others get nothing until he switches (each bus keeps
+the last 200 items, as before).
+
+| Route | What |
+|---|---|
+| `GET /bridge/listen?timeoutMs=&brain=<name>&voice=<sid>` | long-poll that brain's bus; no `brain` = `main`; `voice` is honoured on first registration if free and not 17 |
+| `POST /bridge/speak {text, voice?, to?, brain?}` | no `brain` = `main`; the active brain is spoken now in its own voice; any other brain's text is **parked** (last 10) and the eye whispers `⟨ notes ⟩ 1 waiting` |
+| `GET /bridge/brains` | `{active, brains:[{name,color,voice,connected,parked}]}` |
+| `POST /bridge/brains/active {brain}` | the switch: parked words play at once, joined, in that brain's voice; answers the roster; unknown name → 400 |
+
+- Colours come from the renderer's own orbiter palette (`render/src/orbit.rs` `AGENT_COLORS`),
+  first free one; never green. Voices: 17 is the Eye's (`main`), the others take the next free
+  of `11–16, 18, 19`.
+- `connected` = a listen pending, or one within 90 s. `/bridge/health` now carries
+  `active` and its `brainListening` means **the active brain** is listening — "No one is
+  listening" fires only when the brain he is talking to is deaf.
+- The active name persists in `$XDG_RUNTIME_DIR/dark-eye/active.json` (`DARK_EYE_ACTIVE_FILE`;
+  the sandbox gets its own); a reboot resets to `main`. Only a channel this body has comes back
+  from that file — `createBrains({channels})` puts `notes` on the roster before the file is read,
+  and any other name is logged and dropped to `main`, so a stale file can never leave him
+  talking to a channel nobody listens on.
+- `config.brain` is still only the caption identity the renderer is told at `ready`; the
+  session colour on a switch is M03. The `eye --as`, voice and phone switches are M02–M04.
+- Tests: `body/test/brains.test.js` (alone and behind the bridge), `server.test.js` (routes).
+
+### The two modes, entered by voice (M13, re-aimed by M14)
+
+The two modes are the **Eye's**, not two brains: **call** plays a reply as it arrives,
+**audio notes** leaves it waiting for his `▶` (see "The two modes" below). The channel — who
+hears him — is a separate thing (`main`, `notes`, anything registered later).
+`body/src/intents.js` holds one alias table (`MODES`), phrases per mode and language —
+`audio notes`, `audio note`, `notes mode`, `note mode`, `audionotes`, `notas de audio`,
+`modo notas`, `modo de notas`; `call mode`, `back to call`, `normal mode`,
+`modo llamada`, `modo de llamada` — plus the mis-hearings he gets (`audio nodes`,
+`odio notes`, `audio no`, `audio notas`, `call mod`, `called mode`, `call more`).
+A phrase from that table is a **mode** (`{kind:"mode", name:"call"|"async"}` — the body's own
+word for it, see "The two modes" below), never a channel. Channel names keep their one-token shape; nothing in `brains.js` changed.
+
+- **Where the phrase may sit:** the whole utterance, or the tail after filler only
+  (`hey|hi|ok|okay|eye|dark eye|what's up|wake up|oye|hola|qué tal|vale`) and an optional
+  `talk to|switch to|habla con|cambia a`. So "what's up audio notes" switches and
+  "I want to write some audio notes about the plan" does not — a false switch sends a whole
+  thought to the wrong brain, a missed one costs him a repeat.
+- **What he hears:** entering audio notes mode is whispered `⟨ audio notes ⟩`; M15 adds the
+  spoken confirmation, said before the silence starts.
+- **"talk to me" / "háblame" is call mode**: the queue drains aloud and he is back in call
+  (M09a's quiet-off, under its new name). "call mode" is the other way back.
+- **A channel nobody listens on is entered anyway** (plan §1.7): he asked for it, so the
+  switch happens, the Eye says "notes is not listening. I'm holding your words."
+  ("... no está escuchando. Guardo tus palabras.") and his next thought waits on that bus
+  instead of reaching the other brain. The body starts no session — start it by hand,
+  `systemctl --user start notes-brain` (first start: §the notes brain). A voice switch,
+  `eye talk-to notes` and the page's channel control all behave that way: they share
+  `setActive`. **A mode word can never raise that notice** — a mode has no listener.
+- **Near misses grow the list.** A tail one edit from a phrase but not on it stays words and
+  logs `intents: near "audio nots" → async?`; read `journalctl --user -u dark-eye | grep near`
+  after a week and add what he actually says.
+- Tests: `body/test/intents.test.js` (every phrase, every filler, every mis-hearing, the
+  refusals), `render-bridge.test.js` (the switch path and the deaf line).
+
+## The mouth waits — no-interrupt hold and barge-in cut (M08)
+
+`body/src/hold.js`, one gate in front of the voice worker; every `say` goes through it,
+parked words and the Eye's own notices included (parked → say → hold → voice).
+
+1. **Held, never dropped.** While his mic is open (buds or phone) or a phone utterance is in
+   flight, and for **1500 ms after the mic closes**, speech is queued (≤ 20, oldest dropped with
+   one log line) and then sent in order, each in its own brain's voice, `to` intact.
+2. **The window runs from the mic close**, not from the transcript: the one timer exists only
+   after a close and is re-armed if he opens again inside it. Between his turns nothing is armed.
+3. **Barge-in cut.** Opening the mic (or the first block of a new phone utterance) while the
+   Eye is speaking kills the live `pw-cat`, drops the rest of that utterance and whatever was
+   queued behind it in the worker (`cancel`), and the eye gets `speaking{ms:0}`. The remainder
+   is **dropped, not resumed**; the caption already on screen keeps what was said. A `--to
+   remote` reply is the phone's own WAV and is not cut.
+
+`eye health` carries `"held": N`. Tests: `body/test/hold.test.js`, `audio.test.js` (`cut`),
+`voice.test.js` (`cancel`), `server.test.js`. A plain `eye speak` now waits by itself — the
+old `eye-speak-idle` wrapper is gone.
+
+## The two modes — call, and audio notes (M09a, M14)
+
+**How** the exchange runs, for whichever channel is active and any channel he adds later:
+
+| | **call** | **audio notes** |
+|---|---|---|
+| a reply on arrival | plays, and the page plays it | never: text now, the voice when he asks |
+| the hold | `busy()` + the 1500 ms timer, drains by itself | `parked()`: no timer at all, however long it waits |
+| the way out of the wait | — | `▶` per reply, or "talk to me" for all of it |
+
+`body/src/mode.js`: one enum, `call` or `async`, the second gate on the hold above (`busy()` is
+mic open or a phone utterance in flight, `parked()` is audio notes mode). Voice: **"audio
+notes"** / "notas de audio" / the old **"quiet"** / "silencio" / "cállate" enter it (the eye
+whispers `⟨ audio notes ⟩`); **"call mode"** / "modo llamada" / **"talk to me"** / "háblame"
+leave it. CLI: `eye mode [call|notes]`; bridge: `GET/POST /bridge/mode {mode}`; `eye health`
+carries `"mode": "call"|"notes"`. It is **global and survives a channel switch** — the mouth is
+one resource, and a mode that changed under him is exactly the surprise the hold exists to remove.
+
+**One word each for the channel and the mode.** The channel is `notes` (the one that writes his
+vault); the mode is spoken "audio notes" and is `async` **inside the body only** — `mode.js`,
+`intents.js` and `main.js` say `async`, and the bridge translates at its edge (`fromWire` /
+`toWire` in `mode.js`), so every word he says, types or reads is unchanged: `eye mode
+[call|notes]`, `eye quiet`, `health.mode`, the page. `intents.test.js` pins the pair in both
+directions — "talk to notes" is the channel, "audio notes" is the mode.
+
+**Quiet mode is not a second concept**: audio notes mode is how it is surfaced. `eye quiet
+on|off|status` and `GET/POST /bridge/quiet {on}` stay as aliases (`on:true` ↔ `notes`) and
+`health.quiet` stays beside `health.mode`, so nothing outside the repo breaks. An old
+`quiet.json` with `{on:true}` is read once as `async` and then ignored; the file is left on disk.
+
+1. **Queued, not dropped.** In audio notes mode every `say` sits in the hold (≤ 20, oldest
+   dropped) and plays in order on "talk to me", each in its own channel's voice; with nothing
+   waiting the Eye answers "here". The Eye's own confirmations (a switch, "who is listening")
+   queue like the rest — the only thing it answers aloud is the mode he just asked for.
+2. **The words still reach him at once**, as text, where the voice would have gone — and in
+   audio notes mode to **both** channels, whichever one the turn came from: the on-screen caption
+   (`speak{text}` with no audio) **and** a text-only reply `{seq, text}` on the page's poll
+   lane, so a page he leaves open always holds the `▶` for everything the Eye has said. When
+   the queue plays later, the caption and the page reply come again, with the voice.
+   **On demand, and the mode holds:** the ▶ glyph on that text-only line (M12, "Remote" above)
+   has the body say it again **to the page only** — a `bypass` item the hold does not park. The
+   room stays silent and the rest of the queue keeps waiting.
+3. **With no page open** it behaves exactly as quiet mode did: the on-screen caption is all he gets and
+   "talk to me" is the only release — the overlay is click-through, there is no `▶` to press on
+   the screen. The `▶` is what makes it *audio notes*.
+4. **It persists**: `~/.local/state/dark-eye/mode.json` (`DARK_EYE_MODE_FILE`; the sandbox gets
+   its own, `DARK_EYE_MODE_FILE`), 0600, tmp + rename, read once at start — a restart in audio
+   notes mode logs `mode: async (kept)`. A missing or corrupt value is `call`; a file written
+   before the mode had its own word (`{"mode":"notes"}`) is read as `async`.
+5. **Idle**: nothing resident — one enum, one file read at start, and the hold arms no timer in
+   audio notes mode (`parked()`). Queued items drain **local-only** — the page already got the
+   text item, nothing reaches it twice. A `say` in the ~5 s before the voice worker is ready
+   parks in `pendingSpeech` (max 10) and reaches the mode's path when it is.
+
+Tests: `body/test/mode.test.js`, `hold.test.js`, `intents.test.js`, `server.test.js`,
+`replies.test.js` (text-only item), `remote-replay.test.js` (▶ on a waiting reply, in a browser),
+`eye-sh.test.js`.
 
 ## Orbiters — automatic, and they survive a restart (E31)
 
@@ -761,7 +1207,7 @@ ladder point at `eyemic`. Not built.
   the bud power-cycle reconnect is the one untested path. **E09** — the sidecar already
   puts the buds in HFP while the mic is open; the answer on the buds and the latency
   are not measured.
-- **E10** — the TV view: `canvasZoom` and "show me" / "close canvas" verified
+- **E10** — the screen view: `canvasZoom` and "show me" / "close canvas" verified
   on HDMI-1.
 - **E12** done — the display watch. Its `AudioContext` suspend went with the Electron
   renderer in E19; `pw-cat` has no idle stream to suspend. The open question is closed by

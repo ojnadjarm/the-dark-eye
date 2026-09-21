@@ -47,7 +47,7 @@ test("a block resent under a seq already in is ignored, not appended twice", () 
   assert.equal(t.made[0].read(0).length, 1);
 });
 
-test("the cap is the page's own 3 MB clip, and held blocks count against it", () => {
+test("the cap is the page's own 10 MB clip, and held blocks count against it", () => {
   const t = stubEars({ maxSamples: 10 });
   assert.equal(t.ears.push("u1", 0, new Float32Array(6)), true);
   assert.equal(t.ears.push("u1", 1, new Float32Array(4)), true);
@@ -59,8 +59,8 @@ test("the cap is the page's own 3 MB clip, and held blocks count against it", ()
   assert.equal(q.ears.push("u2", 0, new Float32Array(1)), false);
 });
 
-test("the default cap is 3 MB of Int16 — the same clip the upload route takes", () => {
-  assert.equal(MAX_SAMPLES * 2, 3_000_000);
+test("the default cap is 10 MB of Int16 — the same clip the upload route takes", () => {
+  assert.equal(MAX_SAMPLES * 2, 10_000_000);
 });
 
 test("a second utterance closes the first: one thumb, one clip in flight", () => {

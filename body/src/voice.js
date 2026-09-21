@@ -86,15 +86,19 @@ function initTts(modelDir) {
  * queue, so two utterances cannot interleave their chunks.
  */
 const speaking = [];
+/** Bumped by `cancel`: a step from an older generation stops where it is. */
+let gen = 0;
 
 function speak(m) {
   const cs = chunks(m.text);
+  const g = gen;
   // one message per sentence, `last` on the final one either way, so a
   // sentence that throws drops neither the ones after it nor the utterance
   const step = (i) => {
     const sentence = cs[i];
     const last = i === cs.length - 1;
     const next = () => {
+      if (g !== gen) return;
       if (last) {
         speaking.shift();
         if (speaking.length) speak(speaking[0]);
@@ -156,6 +160,18 @@ port.on("message", (e) => {
       if (!tts) throw new Error("voice not initialized");
       speaking.push(m);
       if (speaking.length === 1) speak(m);
+    } else if (m.type === "cancel") {
+      // the one being made stops unless it is the phone's own; of those waiting only `keep` go on
+      const keep = new Set(m.keep ?? []);
+      const kept = speaking.slice(1).filter((x) => keep.has(x.id));
+      if (speaking.length && keep.has(speaking[0].id)) {
+        speaking.splice(1, Infinity, ...kept);
+        return;
+      }
+      gen++;
+      speaking.length = 0;
+      speaking.push(...kept);
+      if (kept.length) speak(kept[0]);
     } else if (m.type === "set-voice") {
       sid = m.sid ?? sid;
       speed = m.speed ?? speed;

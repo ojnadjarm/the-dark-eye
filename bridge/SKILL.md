@@ -1,6 +1,6 @@
 ---
 name: eye
-description: Give this session Oscar's voice — hear him through The Dark Eye (the eye overlay on the TV) and answer out loud. Use when he says "open the eye", "connect to the eye", "join the eye", or wants this session reachable by voice.
+description: Give this session Oscar's voice — hear him through The Dark Eye (the eye overlay on the screen) and answer out loud. Use when he says "open the eye", "connect to the eye", "join the eye", or wants this session reachable by voice.
 allowed-tools: Bash(eye:*), Bash(systemctl --user * dark-eye*), Bash(journalctl --user -u dark-eye*), Monitor
 ---
 
@@ -8,6 +8,14 @@ allowed-tools: Bash(eye:*), Bash(systemctl --user * dark-eye*), Bash(journalctl 
 
 One body, one ear, one mouth. `eye` is on PATH (`~/.local/bin/eye`); `eye help`
 lists every command. Both steps matter — step 2 is what makes voice work.
+
+## 0. Your name — which brain you are
+
+Several Claude sessions can be brains at once; only one hears him. Pick your
+name (`[a-z0-9-]{1,16}`; the orchestrator is `main`, the notes session is
+`notes`; a session started with `claude --name <name>` uses the same word) and
+`export EYE_BRAIN=<name>` before anything else — every `eye` command then
+carries it (`--as <name>` does the same per call). No name = `main`.
 
 ## 1. Is the body up
 
@@ -19,7 +27,7 @@ first). Logs: `journalctl --user -u dark-eye -n 50`.
 
 Call the **Monitor tool** (not plain Bash) with exactly:
 
-- `command`: `eye listen-loop`
+- `command`: `eye listen-loop --as ${EYE_BRAIN:-main}`
 - `description`: `Oscar's voice via the Dark Eye`
 - `persistent`: `true`
 
@@ -37,10 +45,28 @@ loud unless he asked for this by voice.
 
 ## Answering
 
-- `eye speak "<text>"` — **voice is the answer.** Spoken language, no markdown,
-  one or two short sentences (never over 150 words). Keep the terminal to a
-  line or two; write there only what must be read (code, paths, links).
+- `eye speak --as ${EYE_BRAIN:-main} "<text>"` — **voice is the answer.** Spoken
+  language, no markdown, one or two short sentences (never over 150 words). Keep
+  the terminal to a line or two; write there only what must be read (code, paths,
+  links).
 - **Never speak unprompted.** The Eye answers; it does not start conversations.
+- If you are not the active brain your words are **parked** and he hears them
+  the moment he switches to you — say it once, never repeat it.
+- In **audio notes mode** (`eye health` says `"mode":"notes"`) your words are shown as
+  text and wait for his `▶` or "talk to me", not spoken — do not repeat yourself. The
+  other mode is **call**, where a reply plays as it arrives. The mode is the Eye's and
+  applies to every channel; `eye mode [call|notes]` reads or sets it (`eye quiet on|off`
+  is the old name of the same thing).
+- `eye brains` shows the roster (active, connected, parked). `eye talk-to <name>`
+  hands him over to another brain — only when he asked for it.
+- The roster is **channels** — who hears him: `main`, `notes` (the channel that writes his
+  Obsidian vault), and anything registered later. The two **modes** are a separate thing,
+  above: "audio notes" is a mode, `notes` is a channel. Nobody starts a channel's session for him — if yours is down he
+  is switched there anyway, told it is not listening, and his words wait on your bus until
+  you long-poll.
+- His notes, only when he asks: "remember my notes from yesterday" → `eye notes
+  --since yesterday`, then answer from the text; "what did I say about the lamp"
+  → `eye notes --grep lamp`. `eye notes` reads the vault; the notes brain writes it.
 - Subagents put their own orbiter on the eye and take it off — the
   `SubagentStart`/`SubagentStop` hooks do it, never send those by hand.
   `eye status <id> working "<label>"` (and `... done`) is for a ticket or a long

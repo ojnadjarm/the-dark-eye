@@ -10,16 +10,24 @@ let base;
 let calls;
 let listenNext;
 let micOn;
+let held = 0;
 let tvMode;
+let roster;
+let modeNow;
 
 before(async () => {
   server = startServer({
     port: 0,
     secret: SECRET,
     onSpeak: (a) => calls.push(["speak", a]),
-    onListen: (ms) => {
-      calls.push(["listen", ms]);
+    onListen: (ms, brain, voice) => {
+      calls.push(["listen", ms, brain, voice]);
       return listenNext;
+    },
+    onBrains: () => roster,
+    onActive: (name) => {
+      calls.push(["active", name]);
+      return name === "notes" ? { active: "notes", brains: roster.brains } : null;
     },
     onMic: (on) => {
       calls.push(["mic", on]);
@@ -27,6 +35,12 @@ before(async () => {
       return micOn;
     },
     onMicOpen: () => micOn,
+    onHeld: () => held,
+    onMode: (m, channel) => {
+      calls.push(channel === undefined ? ["mode", m] : ["mode", m, channel]);
+      if (m !== undefined) modeNow = m;
+      return modeNow;
+    },
     onStatus: (a) => calls.push(["status", a]),
     onOrbiters: () => [{ id: "a", label: "one", until: 42 }],
     onShow: (a) => {
@@ -50,6 +64,8 @@ beforeEach(() => {
   listenNext = "hello";
   micOn = false;
   tvMode = "auto";
+  modeNow = "call";
+  roster = { active: "main", brains: [{ name: "main", color: "#b04dff", voice: 17, connected: false, parked: 0 }] };
 });
 
 const req = (path, opts = {}) =>
@@ -86,12 +102,20 @@ test("an unknown path is 404 and a wrong method is 405", async () => {
 test("speak passes text and voice through", async () => {
   const r = await post("/bridge/speak", { text: "bridge is up", voice: 17 });
   assert.deepEqual(await r.json(), { ok: true });
-  assert.deepEqual(calls, [["speak", { text: "bridge is up", voice: 17, to: undefined }]]);
+  assert.deepEqual(calls, [["speak", { text: "bridge is up", voice: 17, to: undefined, brain: undefined }]]);
 });
 
 test("speak without a voice leaves it undefined", async () => {
   await post("/bridge/speak", { text: "plain" });
-  assert.deepEqual(calls[0][1], { text: "plain", voice: undefined, to: undefined });
+  assert.deepEqual(calls[0][1], { text: "plain", voice: undefined, to: undefined, brain: undefined });
+});
+
+test("speak passes a brain name through and refuses a bad one", async () => {
+  await post("/bridge/speak", { text: "noted", brain: "notes" });
+  assert.equal(calls[0][1].brain, "notes");
+  calls = [];
+  assert.equal((await post("/bridge/speak", { text: "x", brain: "Notes!" })).status, 400);
+  assert.deepEqual(calls, []);
 });
 
 test("speak passes a valid --to through and drops anything else", async () => {
@@ -154,6 +178,30 @@ test("an event without a detail still answers", async () => {
 test("a silent window returns transcript:null", async () => {
   listenNext = null;
   assert.deepEqual(await (await req("/bridge/listen?timeoutMs=10")).json(), { transcript: null, source: "local" });
+});
+
+test("listen passes the brain and its voice through, and refuses a bad name", async () => {
+  await req("/bridge/listen?timeoutMs=10&brain=notes&voice=12");
+  assert.deepEqual(calls[0], ["listen", 10, "notes", 12]);
+  calls = [];
+  await req("/bridge/listen?timeoutMs=10");
+  assert.deepEqual(calls[0], ["listen", 10, undefined, undefined]);
+  calls = [];
+  assert.equal((await req("/bridge/listen?timeoutMs=10&brain=Notes!")).status, 400);
+  assert.deepEqual(calls, []);
+});
+
+test("brains lists the roster; active switches or is 400", async () => {
+  assert.deepEqual(await (await req("/bridge/brains")).json(), { ok: true, ...roster });
+  const r = await post("/bridge/brains/active", { brain: "notes" });
+  assert.equal((await r.json()).active, "notes");
+  assert.deepEqual(calls, [["active", "notes"]]);
+  calls = [];
+  for (const brain of ["ghost", "Notes!", "", undefined]) {
+    const bad = await post("/bridge/brains/active", { brain });
+    assert.equal(bad.status, 400, String(brain));
+  }
+  assert.deepEqual(calls, [["active", "ghost"]]);
 });
 
 test("the listen timeout is clamped and defaulted", async () => {
@@ -266,63 +314,90 @@ test("health carries the tv override", async () => {
   assert.equal((await (await req("/bridge/health")).json()).tv, "off");
 });
 
-test("health reports the mic and whether a brain is listening", async () => {
-  // a fresh server: brainListening is sticky for 90s, so the shared one is warm
-  let open = false;
-  let release;
-  const held = new Promise((r) => (release = r));
-  const s = startServer({
-    port: 0,
-    secret: SECRET,
-    onListen: () => held,
-    onMic: (on) => (open = on),
-    onMicOpen: () => open,
+test("health reports the mic, the active brain and whether it is listening", async () => {
+  assert.deepEqual(await (await req("/bridge/health")).json(), {
+    ok: true,
+    active: "main",
+    brainListening: false,
+    micOpen: false,
+    held: 0,
+    mode: "call",
+    quiet: false,
+    tv: "auto",
   });
-  await new Promise((r) => s.once("listening", r));
-  const b = `http://127.0.0.1:${s.address().port}`;
-  const get = (p) => fetch(b + p, { headers: { "x-dark-eye-key": SECRET } }).then((r) => r.json());
-
-  assert.deepEqual(await get("/bridge/health"), { ok: true, brainListening: false, micOpen: false, tv: "auto" });
-
-  await fetch(b + "/bridge/mic", {
-    method: "POST",
-    headers: { "x-dark-eye-key": SECRET, "Content-Type": "application/json" },
-    body: '{"on":true}',
-  });
-  assert.equal((await get("/bridge/health")).micOpen, true);
-
-  const pending = get("/bridge/listen?timeoutMs=5000");
-  await new Promise((r) => setTimeout(r, 30));
-  assert.equal((await get("/bridge/health")).brainListening, true, "a waiter is pending");
-  release("late words");
-  await pending;
-  assert.equal((await get("/bridge/health")).brainListening, true, "returned moments ago");
-  s.close();
+  await post("/bridge/mic", { on: true });
+  roster.brains[0].connected = true;
+  const h = await (await req("/bridge/health")).json();
+  assert.equal(h.micOpen, true);
+  assert.equal(h.brainListening, true);
+  roster.active = "notes"; // connected, but not the one he is talking to
+  assert.equal((await (await req("/bridge/health")).json()).brainListening, false);
 });
 
-test("brainListening is readable from the body, not only over health", async () => {
-  let release;
-  const held = new Promise((r) => (release = r));
-  const s = startServer({
-    port: 0,
-    secret: SECRET,
-    onSpeak: () => {},
-    onListen: () => held,
-    onMic: () => false,
-    onMicOpen: () => false,
-    onStatus: () => {},
-    onShow: () => "1",
-  });
-  await new Promise((r) => s.once("listening", r));
-  assert.equal(s.brainListening(), false);
-  const pending = fetch(`http://127.0.0.1:${s.address().port}/bridge/listen?timeoutMs=5000`, {
-    headers: { "x-dark-eye-key": SECRET },
-  });
-  await new Promise((r) => setTimeout(r, 30));
-  assert.equal(s.brainListening(), true);
-  release("words");
-  await pending;
-  s.close();
+test("health carries how many utterances the mouth is holding", async () => {
+  held = 3;
+  assert.equal((await (await req("/bridge/health")).json()).held, 3);
+  held = 0;
+});
+
+test("mode reads it, posting sets it, health carries it — his word out, the body's word in", async () => {
+  assert.deepEqual(await (await req("/bridge/mode")).json(), { ok: true, mode: "call" });
+  assert.deepEqual(calls, [["mode", undefined]]);
+  assert.deepEqual(await (await post("/bridge/mode", { mode: "notes" })).json(), { ok: true, mode: "notes" });
+  assert.deepEqual(calls[1], ["mode", "async"], "the wire's `notes` reaches the body as `async`");
+  assert.equal((await (await req("/bridge/health")).json()).mode, "notes");
+  assert.deepEqual(await (await post("/bridge/mode", { mode: "call" })).json(), { ok: true, mode: "call" });
+  assert.equal((await (await req("/bridge/health")).json()).mode, "call");
+});
+
+test("a mode may name one channel; a name nobody has is refused and never reaches the body", async () => {
+  roster.brains.push({ name: "notes", color: "#4dd9ff", voice: 12, connected: false, parked: 0, mode: "notes" });
+  assert.deepEqual(await (await post("/bridge/mode", { mode: "notes", channel: "notes" })).json(), { ok: true, mode: "notes" });
+  assert.deepEqual(calls.at(-1), ["mode", "async", "notes"], "his word in, the channel with it");
+  const r = await post("/bridge/mode", { mode: "notes", channel: "nope" });
+  assert.equal(r.status, 400);
+  assert.match((await r.json()).error, /unknown brain/);
+  assert.deepEqual(calls.at(-1), ["mode", "async", "notes"], "the body was never asked about a channel it has not got");
+  await post("/bridge/mode", { mode: "call" });
+  assert.deepEqual(calls.at(-1), ["mode", "call"], "no channel at all is the active one");
+});
+
+test("the roster carries each channel's own mode, health the active channel's", async () => {
+  roster.brains[0].mode = "call";
+  roster.brains.push({ name: "notes", color: "#4dd9ff", voice: 12, connected: false, parked: 0, mode: "notes" });
+  const rows = (await (await req("/bridge/brains")).json()).brains;
+  assert.deepEqual(rows.map((r) => [r.name, r.mode]), [["main", "call"], ["notes", "notes"]]);
+  assert.equal((await (await req("/bridge/health")).json()).mode, "call", "health is the mode of the exchange he is in");
+});
+
+test("mode refuses anything but call or notes, and never calls the body", async () => {
+  for (const mode of ["quiet", "async", "constructor", "", 1, undefined, null]) {
+    const r = await post("/bridge/mode", { mode });
+    assert.equal(r.status, 400, String(mode));
+    assert.match((await r.json()).error, /call or notes/);
+  }
+  assert.deepEqual(calls, []);
+});
+
+test("quiet is the old name of audio notes mode: the alias maps both ways, health keeps both", async () => {
+  assert.deepEqual(await (await req("/bridge/quiet")).json(), { ok: true, on: false });
+  assert.deepEqual(await (await post("/bridge/quiet", { on: true })).json(), { ok: true, on: true });
+  assert.deepEqual(calls.at(-1), ["mode", "async"]);
+  const h = await (await req("/bridge/health")).json();
+  assert.equal(h.quiet, true);
+  assert.equal(h.mode, "notes");
+  assert.deepEqual(await (await post("/bridge/quiet", { on: false })).json(), { ok: true, on: false });
+  assert.deepEqual(calls.at(-1), ["mode", "call"]);
+  assert.equal((await (await req("/bridge/health")).json()).quiet, false);
+});
+
+test("quiet still refuses anything but a boolean, and never calls the body", async () => {
+  for (const on of ["on", 1, undefined, null]) {
+    const r = await post("/bridge/quiet", { on });
+    assert.equal(r.status, 400, String(on));
+    assert.match((await r.json()).error, /true or false/);
+  }
+  assert.deepEqual(calls, []);
 });
 
 test("GET status lists the orbiters the body is holding", async () => {

@@ -3,7 +3,7 @@
 //! socket, drawn at `DARK_EYE_IDLE_FPS` (60 on the GPU, 30 in software) idle
 //! and 60 fps while something is happening.
 use eye_render::backend::Backend;
-use eye_render::sched::{idle_fps_from_env, parse_line, Msg, State};
+use eye_render::sched::{idle_fps_from_env, parse_line, Msg, State, MARKS_LINE};
 use eye_render::{rain, sim, window};
 use serde_json::json;
 use std::error::Error;
@@ -229,6 +229,8 @@ fn scene(name: &str) -> Option<(Vec<(u64, &'static str)>, u64)> {
         "heard-caption" => (vec![session, (0, HEARD_CAPTION_LINE)], 190),
         // both ripples, out of phase, with nothing else on top of the eye
         "rings" => (vec![session, (0, r#"{"type":"ptt","on":true}"#), (0, r#"{"type":"speaking","ms":60000}"#)], 100),
+        // audio notes mode, five held replies in five colours and a sixth behind the `+`
+        "marks" => (vec![session, (0, MARKS_LINE)], 100),
         _ => return None,
     })
 }

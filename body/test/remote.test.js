@@ -5,7 +5,10 @@ const http = require("node:http");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { startRemote } = require("../src/remote");
+const vm = require("node:vm");
+const { startRemote, AUDIO_MAX } = require("../src/remote");
+const { IDLE_MS } = require("../src/remote-ear");
+const OVER = AUDIO_MAX + 1;
 
 const SECRET = "s3cret-key";
 const servers = [];
@@ -20,6 +23,9 @@ let cursorNext;
 let wavNext;
 let streamNext;
 let finalNext;
+let rosterNext;
+let replayNext;
+let modeNext;
 
 /** A server of its own — the login rate limit is per address, so tests must not share one. */
 async function start(opts = {}) {
@@ -45,6 +51,10 @@ async function start(opts = {}) {
     onAck: (seq) => {
       calls.push(["ack", seq]);
     },
+    onReplay: (seq) => {
+      calls.push(["replay", seq]);
+      return replayNext;
+    },
     onCursor: () => {
       calls.push(["cursor"]);
       return cursorNext;
@@ -52,6 +62,18 @@ async function start(opts = {}) {
     wav: (id) => {
       calls.push(["wav", id]);
       return wavNext;
+    },
+    onBrains: () => {
+      calls.push(["brains"]);
+      return rosterNext;
+    },
+    onActive: (brain) => {
+      calls.push(["active", brain]);
+      return brain === "notes" ? rosterNext : null;
+    },
+    onMode: (m) => {
+      calls.push(["mode", m]);
+      return m ?? modeNext;
     },
     sessionsFile: tempSessions(),
     ...opts,
@@ -100,7 +122,23 @@ beforeEach(() => {
   pollNext = null;
   cursorNext = 0;
   wavNext = null;
+  replayNext = true;
+  rosterNext = { active: "notes", brains: [{ name: "main", color: "#b04dff" }, { name: "notes", color: "#4dd9ff" }] };
 });
+
+/** A replay on a server of its own — the login rate limit is per address, so tests must not share one. */
+const replayOn = (b, c, seq) =>
+  fetch(b + "/remote/replay", {
+    method: "POST",
+    headers: { cookie: `de=${c}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ seq }),
+  });
+
+/** A fresh listener and a cookie for it. */
+const ownServer = async () => {
+  const own = await start();
+  return [own, cookieOf(await login(own))];
+};
 
 const authed = (path, opts = {}) => fetch(base + path, { ...opts, headers: { cookie: `de=${cookie}`, ...(opts.headers ?? {}) } });
 
@@ -122,6 +160,55 @@ test("the worklet is served without a cookie — the page cannot open the mic wi
   assert.equal(r.status, 200);
   assert.match(r.headers.get("content-type"), /javascript/);
   assert.match(await r.text(), /registerProcessor/);
+});
+
+/** Every word and picture he sees or hears read aloud: labels, titles and the status line. */
+const pageWords = (src) => [
+  ...src.matchAll(/(?:aria-label|title|placeholder)="([^"]*)"/g),
+  ...src.matchAll(/(?:aria-label|title)",\s*\n?\s*"([^"]*)"/g),
+  ...src.matchAll(/\b(?:state|warn)\(\s*(?:"[a-z]+",\s*)?"([^"]*)"/g),
+  ...src.matchAll(/>([^<>{}]*?)</g),
+].map((m) => m[1]);
+
+test("nothing on the page claims to block anything: no mute, as a word or as a picture", async () => {
+  const page = await (await fetch(base + "/")).text();
+  for (const w of pageWords(page))
+    assert.doesNotMatch(w, /\b(mute|muted|muting|silenced|suppressed)\b/i, `he is shown "${w.trim()}"`);
+  // the control he rejected by name, and every key it was remembered under
+  for (const gone of ['id="auto"', "autoPlay", "autoDefault", "readAuto", "drawAuto", "autoplay:", 'class="mute"', 'class="wave"', "#glyphs"])
+    assert.ok(!page.includes(gone), `the auto-play toggle is back: ${gone}`);
+  assert.ok(!/localStorage/.test(page), "a per-device setting is back: the mode is the only one");
+  // the two words he uses are the two words on it
+  assert.match(page, /MODE_WORD = \{ call: "call", notes: "audio notes" \}/);
+  assert.ok(!/"async"/.test(page), "the body's own word for the mode reached the page");
+});
+
+test("the page never ends a turn behind his back: no stop on hide, no timer to flush", async () => {
+  const page = await (await fetch(base + "/")).text();
+  assert.ok(!/document\.hidden\)\s*\{\s*stop\(\)/.test(page), "a hidden tab must not stop the turn");
+  assert.ok(!/setInterval\(flush/.test(page), "the flush is counted off the worklet, never clamped");
+  assert.match(page, /blocks\.length >= FLUSH_BLOCKS/);
+  assert.match(page, /while \(!document\.hidden \|\| recording \|\| thinking \|\| pip\)/);
+  assert.match(page, /addEventListener\("mute"/);
+  assert.match(page, /listening \\u00b7 \$\{TITLE\}/);
+});
+
+/** The page's own top-level constants, arithmetic and all, read out of the served source. */
+const pageConsts = (src, names) =>
+  vm.runInNewContext(
+    names.map((n) => new RegExp(`^const ${n} = [^;]+;`, "m").exec(src)[0]).join("\n") +
+      `\n({ ${names.join(", ")} })`,
+  );
+
+test("a mute ends the turn before the body lets the buffer go, never at the same second", async () => {
+  const page = await (await fetch(base + "/")).text();
+  const { EAR_IDLE_MS, MUTE_GRACE_MS, MUTE_MAX_MS } = pageConsts(page, ["EAR_IDLE_MS", "MUTE_GRACE_MS", "MUTE_MAX_MS"]);
+  assert.equal(EAR_IDLE_MS, IDLE_MS, "the page's mirror of the ear's idle window has drifted");
+  assert.ok(MUTE_GRACE_MS >= 15_000, `the grace is only ${MUTE_GRACE_MS} ms — a slow tail would still lose the turn`);
+  assert.ok(
+    MUTE_MAX_MS <= IDLE_MS - MUTE_GRACE_MS,
+    `the page waits ${MUTE_MAX_MS} ms on a mute but the body drops the stream at ${IDLE_MS} ms: everything said before the mute is lost`,
+  );
 });
 
 test("the page and the worklet are never cached stale: no-cache, an ETag, and a cheap 304", async () => {
@@ -314,11 +401,11 @@ test("a transcript the ear did not produce answers null, not undefined", async (
   assert.deepEqual(await r.json(), { transcript: null });
 });
 
-test("a declared length over the 3MB cap is answered 413 before a byte is read", { timeout: 10_000 }, async () => {
+test("a declared length over the turn cap is answered 413 before a byte is read", { timeout: 10_000 }, async () => {
   const status = await new Promise((resolve, reject) => {
     const r = http.request(base + "/remote/audio", {
       method: "POST",
-      headers: { cookie: `de=${cookie}`, "Content-Type": "application/octet-stream", "Content-Length": 3_200_000 },
+      headers: { cookie: `de=${cookie}`, "Content-Type": "application/octet-stream", "Content-Length": OVER },
     });
     r.on("response", (res) => {
       res.resume();
@@ -340,7 +427,7 @@ test("a chunked upload over the cap never reaches the ear", { timeout: 10_000 },
     r.on("response", (res) => (res.resume(), res.on("end", resolve)));
     // the socket dies under us once the cap trips; that is the point of the cap
     r.on("error", (e) => (["ECONNRESET", "EPIPE"].includes(e.code) ? resolve() : reject(e)));
-    r.end(Buffer.alloc(3_200_000));
+    r.end(Buffer.alloc(OVER));
   });
   assert.deepEqual(calls, []);
 });
@@ -383,11 +470,11 @@ test("an utterance past its cap is 413 — the ear said no more", async () => {
   assert.deepEqual(await r.json(), { error: "utterance too long" });
 });
 
-test("a single block over the 3MB cap is 413 before the ear sees a byte", async () => {
+test("a single block over the turn cap is 413 before the ear sees a byte", async () => {
   const status = await new Promise((resolve, reject) => {
     const r = http.request(base + "/remote/stream?utt=u1&seq=0", {
       method: "POST",
-      headers: { cookie: `de=${cookie}`, "Content-Length": 3_200_000 },
+      headers: { cookie: `de=${cookie}`, "Content-Length": OVER },
     });
     r.on("response", (res) => (res.resume(), resolve(res.statusCode)));
     r.on("error", (e) => (["ECONNRESET", "EPIPE"].includes(e.code) ? null : reject(e)));
@@ -461,6 +548,132 @@ test("poll answers the reply it is given", async () => {
   assert.deepEqual(await (await authed("/remote/poll?since=3")).json(), pollNext);
 });
 
+// -- the caption: the channel and the mode ----------------------------------
+
+test("the roster is served to a page that has the cookie", async () => {
+  const r = await authed("/remote/brains");
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), rosterNext);
+  assert.deepEqual(calls, [["brains"]]);
+});
+
+test("a tap on a chip forwards the name and answers the roster", async () => {
+  const r = await authed("/remote/active", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ brain: "notes" }),
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), rosterNext);
+  assert.deepEqual(calls, [["active", "notes"]]);
+});
+
+test("a name nobody has, or no name at all, is 400", async () => {
+  for (const body of [JSON.stringify({ brain: "ghost" }), JSON.stringify({ brain: 7 }), "{", ""]) {
+    calls = [];
+    const r = await authed("/remote/active", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    assert.equal(r.status, 400, body);
+    assert.deepEqual((await r.json()).error, "unknown brain");
+  }
+});
+
+test("the roster and the switch need the cookie", async () => {
+  assert.equal((await fetch(base + "/remote/brains")).status, 401);
+  const r = await fetch(base + "/remote/active", { method: "POST", body: JSON.stringify({ brain: "notes" }) });
+  assert.equal(r.status, 401);
+  assert.deepEqual(calls, []);
+});
+
+const postMode = (mode) =>
+  authed("/remote/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
+
+test("the mode is served in his own word, whatever the body calls it", async () => {
+  modeNext = "notes";
+  const r = await authed("/remote/mode");
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { mode: "notes" });
+  assert.deepEqual(calls, [["mode", undefined]]);
+});
+
+test("a tap on the mode word forwards it once and answers the mode the body settled on", async () => {
+  for (const mode of ["notes", "call"]) {
+    calls = [];
+    const r = await postMode(mode);
+    assert.equal(r.status, 200, mode);
+    assert.deepEqual(await r.json(), { mode });
+    assert.deepEqual(calls, [["mode", mode]], "one tap, one setMode");
+  }
+});
+
+test("only his two words are a mode here — the body's `async` never comes back through the page", async () => {
+  for (const body of [JSON.stringify({ mode: "async" }), JSON.stringify({ mode: "quiet" }), JSON.stringify({ mode: 7 }), "{", ""]) {
+    calls = [];
+    const r = await authed("/remote/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    assert.equal(r.status, 400, body);
+    assert.equal((await r.json()).error, "unknown mode");
+    assert.deepEqual(calls, [], "a mode the page may not send still reached the body");
+  }
+});
+
+test("the mode needs the cookie, both ways", async () => {
+  assert.equal((await fetch(base + "/remote/mode")).status, 401);
+  const r = await fetch(base + "/remote/mode", { method: "POST", body: JSON.stringify({ mode: "notes" }) });
+  assert.equal(r.status, 401);
+  assert.deepEqual(calls, []);
+});
+
+/** A listener of its own whose `onMode` records the channel too, which the shared one cannot. */
+const modeServer = async () => {
+  const moved = [];
+  const own = await start({
+    onMode: (m, channel) => {
+      moved.push([m, channel]);
+      return m;
+    },
+  });
+  return [own, cookieOf(await login(own)), moved];
+};
+
+const postModeOn = (b, c, body) =>
+  fetch(b + "/remote/mode", {
+    method: "POST",
+    headers: { cookie: `de=${c}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+test("a tap on the mode icon carries the channel it moves, and the answer names it", async () => {
+  const [own, c, moved] = await modeServer();
+  const r = await postModeOn(own, c, { mode: "notes", channel: "main" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { mode: "notes", channel: "main" });
+  assert.deepEqual(moved, [["notes", "main"]], "the channel never reached the body");
+});
+
+test("a channel nobody has cannot move a mode — the roster is the only list", async () => {
+  const [own, c, moved] = await modeServer();
+  for (const channel of ["ghost", "", 7, null]) {
+    const r = await postModeOn(own, c, { mode: "notes", channel });
+    assert.equal(r.status, 400, JSON.stringify(channel));
+    assert.equal((await r.json()).error, "unknown brain");
+  }
+  assert.deepEqual(moved, [], "a channel the body does not list still moved a mode");
+});
+
+test("no channel at all is still the active one: the roster is not even read", async () => {
+  modeNext = "call";
+  const r = await postMode("notes");
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { mode: "notes" }, "an answer with no channel must name no row");
+  assert.deepEqual(calls, [["mode", "notes"]]);
+});
+
+test("the page keeps no roster size in it: the two-channel shortcut is gone", async () => {
+  const page = await (await fetch(base + "/")).text();
+  assert.doesNotMatch(page, /chans\.length === 2/, "the two-channel shortcut is still in the page");
+  assert.match(page, /id="halo"/, "the halo is not in the page");
+  assert.match(page, /id="all"/, "the full index is not in the page");
+});
+
 // -- the ack ----------------------------------------------------------------
 
 test("ack takes the seq from the body or the query and answers 204", async () => {
@@ -488,13 +701,76 @@ test("ack needs the cookie", async () => {
   assert.equal((await fetch(base + "/remote/ack", { method: "POST" })).status, 401);
 });
 
+// -- the replay -------------------------------------------------------------
+
+test("a replay forwards the seq and answers ok — the reply itself comes back on the poll", async () => {
+  const r = await replayOn(...(await ownServer()), 4);
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { ok: true });
+  assert.deepEqual(calls, [["replay", 4]]);
+});
+
+test("a seq the body no longer holds is 400, and nothing is said again", async () => {
+  replayNext = false;
+  const r = await replayOn(...(await ownServer()), 900);
+  assert.equal(r.status, 400);
+  assert.equal((await r.json()).error, "unknown seq");
+});
+
+test("a seq that is not one is 400 and reaches nothing", async () => {
+  for (const body of ["{}", '{"seq":"x"}', '{"seq":-1}', '{"seq":1.5}', "not json"]) {
+    calls = [];
+    const r = await authed("/remote/replay", { method: "POST", body });
+    assert.equal(r.status, 400, body);
+    assert.deepEqual(calls, [], body);
+  }
+});
+
+test("a held button is not twenty utterances: a second replay inside the second is 429", async () => {
+  const [own, c] = await ownServer();
+  const again = () => replayOn(own, c, 3);
+  assert.equal((await again()).status, 200);
+  calls = [];
+  const r = await again();
+  assert.equal(r.status, 429);
+  assert.deepEqual(calls, [], "the body was never asked twice");
+});
+
+test("a refused replay never starts the gap — not for him, not for the other device", async () => {
+  const [own, phone] = await ownServer();
+  const pc = cookieOf(await login(own));
+  replayNext = false;
+  assert.equal((await replayOn(own, phone, 900)).status, 400);
+  replayNext = true;
+  assert.equal((await replayOn(own, pc, 3)).status, 200, "one device's bad press gagged the other");
+  assert.equal((await replayOn(own, phone, 3)).status, 200, "a press that got nothing started the gap");
+});
+
+test("the gap is the device's own: a good press on one does not gag the other", async () => {
+  const [own, phone] = await ownServer();
+  const pc = cookieOf(await login(own));
+  assert.equal((await replayOn(own, phone, 3)).status, 200);
+  assert.equal((await replayOn(own, phone, 3)).status, 429);
+  assert.equal((await replayOn(own, pc, 3)).status, 200, "the other device was made to wait");
+});
+
+test("a replay needs the cookie", async () => {
+  assert.equal((await fetch(base + "/remote/replay", { method: "POST" })).status, 401);
+  assert.deepEqual(calls, []);
+});
+
 // -- the cursor -------------------------------------------------------------
 
 test("the cursor is the newest seq, and 0 when there is nothing", async () => {
   cursorNext = 12;
-  assert.deepEqual(await (await authed("/remote/cursor")).json(), { seq: 12 });
+  const first = await (await authed("/remote/cursor")).json();
+  assert.equal(first.seq, 12);
   cursorNext = 0;
-  assert.deepEqual(await (await authed("/remote/cursor")).json(), { seq: 0 });
+  const second = await (await authed("/remote/cursor")).json();
+  assert.equal(second.seq, 0);
+  // the body's life, so a page still holding the last one's seqs knows they are gone
+  assert.match(first.boot, /^[A-Za-z0-9_-]{8}$/);
+  assert.equal(second.boot, first.boot, "the boot id changed without a restart");
 });
 
 test("the cursor needs the cookie", async () => {

@@ -213,6 +213,60 @@ test("a chunk with no text sends no caption, and a dropped one is never captione
   );
 });
 
+// --- barge-in (M08) ------------------------------------------------------------------
+
+test("cut kills the live pw-cat, empties the queue and speaking is false at once", async () => {
+  const { a, calls, speaking, lines, played } = audioOf({ idleMs: 60_000 });
+  const plays = () => calls().filter((c) => c[0] === "-p"); // a killed fake leaves its OVERLAP mark
+  a.play({ ...chunk(0, false, 24000), id: 1 }); // 1 s live
+  a.play({ ...chunk(0, true, 24000), id: 2 }); // waits behind it
+  await until(() => plays().length === 1, "the live pw-cat");
+  assert.strictEqual(a.speaking, true);
+  a.cut();
+  assert.strictEqual(a.speaking, false);
+  assert.strictEqual(speaking.at(-1), 0, "the eye is told the mouth is closed");
+  await new Promise((r) => setTimeout(r, 200));
+  assert.strictEqual(plays().length, 1, "the queued utterance never got its pw-cat");
+  assert.strictEqual(played().length, 0, "the killed one never drained");
+  a.play({ ...chunk(0, true, 4), id: 3, samples: Float32Array.from([9, 9, 9, 9]) });
+  await until(() => plays().length === 2, "a later utterance plays");
+  assert.ok(!lines.some((l) => l.startsWith("utterance went quiet")), `logged: ${lines.join(" | ")}`);
+});
+
+test("a chunk arriving after the cut for the cut id is ignored", async () => {
+  const { a, calls, caps } = audioOf({ idleMs: 60_000 });
+  a.play({ ...chunk(0, false, 24000), id: 1, text: "one." });
+  a.play({ ...chunk(1, false, 24000), id: 1, text: "two." }); // its caption is due in 1 s
+  await until(() => calls().length === 1, "the live pw-cat");
+  a.cut();
+  a.play({ ...chunk(2, true, 4), id: 1, text: "three." });
+  await new Promise((r) => setTimeout(r, 1100));
+  assert.strictEqual(calls().length, 1, "no new pw-cat for the cut utterance");
+  assert.strictEqual(a.speaking, false);
+  assert.deepStrictEqual(caps.map((c) => c.text), ["one."], "the pending caption of the cut words never shows");
+});
+
+test("cut also ignores the next utterance the worker had already started", async () => {
+  const { a, calls } = audioOf({ idleMs: 60_000 });
+  const plays = () => calls().filter((c) => c[0] === "-p");
+  a.play({ ...chunk(0, false, 24000), id: 1 }); // A plays; the worker is already making B (id 2)
+  await until(() => plays().length === 1, "A's pw-cat");
+  a.cut(2);
+  a.play({ ...chunk(0, false, 24000), id: 2, text: "B one." }); // B's first sentence lands after the cut
+  a.play({ ...chunk(1, true, 4), id: 2, text: "B two." });
+  await new Promise((r) => setTimeout(r, 200));
+  assert.strictEqual(plays().length, 1, "no stray sentence of B");
+  assert.strictEqual(a.speaking, false);
+  a.play({ ...chunk(0, true, 4), id: 3 });
+  await until(() => plays().length === 2, "the utterance after the cut plays");
+});
+
+test("cut with nothing playing is a no-op", () => {
+  const { a, speaking } = audioOf();
+  a.cut();
+  assert.deepStrictEqual(speaking, []);
+});
+
 // --- where the voice comes out (E23) ------------------------------------------------
 
 const SINKS = [

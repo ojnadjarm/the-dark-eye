@@ -20,7 +20,7 @@ a local model with a loop. The brain is a plug, not a foundation, and the body
 never depends on which one is holding the other end.
 
 ```
- TV ◄── node body: eye-render overlay + canvas + voice worker (Parakeet in, Kokoro out)
+ screen ◄── node body: eye-render overlay + canvas + voice worker (Parakeet in, Kokoro out)
             ▲  bridge :8642 — speak · listen · mic · status · show · health
             │
       any brain that can curl  ── the orchestrator today, via the /eye skill

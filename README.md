@@ -1,7 +1,7 @@
 # The Dark Eye
 
 A voice-first AI presence for this laptop: an ethereal cat-eye of Matrix glyphs
-floating over the TV. Oscar opens his mic and talks; the Claude orchestrator
+floating over the screen. Oscar opens his mic and talks; the Claude orchestrator
 session hears him and answers out loud through a local voice. No cloud in the
 loop — speech in and speech out both run on the CPU.
 
@@ -13,7 +13,7 @@ Design: `DESIGN.md` · Plans: `PLAN-UBUNTU.md`, `PLAN-LOWRES.md`, `PLAN-GPU.md` 
 earbuds tap ──BlueZ AVRCP uinput──► ptt-earbuds.py ──POST /bridge/mic──┐
 keyboard (GNOME custom key) ──────► eye mic ───────────────────────────┤
                                                                        ▼
- TV HDMI-1 ◄── eye-render (Rust, XWayland) ◄── node body: bridge + voice worker
+ screen (HDMI-1) ◄── eye-render (Rust, XWayland) ◄── node body: bridge + voice worker
  speakers/buds ◄── Kokoro TTS      Parakeet STT ◄── mic (PipeWire, HFP autoswitch)
                                    bridge :8642 (127.0.0.1): speak listen mic status show
                                           ▲
@@ -40,7 +40,7 @@ keyboard (GNOME custom key) ──────► eye mic ───────�
 ## Quick start
 
 ```bash
-systemctl --user start dark-eye     # the eye appears bottom-right on the TV
+systemctl --user start dark-eye     # the eye appears bottom-right on the screen
 eye health                          # {"ok":true,...}
 ```
 
@@ -73,12 +73,17 @@ Plain HTTP, header `x-dark-eye-key: <secret>`. `eye help` prints the client.
 
 | Command | Endpoint | What |
 |---|---|---|
-| `eye speak <text> [--voice sid]` | `POST /bridge/speak` | say it out loud + caption |
+| `eye speak <text> [--voice sid]` | `POST /bridge/speak` | say it out loud + caption; from a brain that is not active it is parked |
 | `eye listen [ms]` / `eye listen-loop` | `GET /bridge/listen` | long-poll his words as `VOICE:` / `EVENT:` lines |
+| `eye brains` | `GET /bridge/brains` | the roster: active brain, who is connected, parked words |
+| `eye talk-to <brain>` | `POST /bridge/brains/active` | switch his voice to that brain |
 | `eye mic [on\|off]` | `POST /bridge/mic` | open/close his mic (no arg = toggle) |
 | `eye status <id> <state> <label>` | `POST /bridge/status` | an orbiter around the eye |
 | `eye show <title> <file> [--ask]` | `POST /bridge/show` | put a visual on his canvas |
-| `eye health` | `GET /bridge/health` | body up, ear armed, mic open |
+| `eye health` | `GET /bridge/health` | body up, ear armed, mic open, active brain |
+
+`--as <brain>` on any command (or `EYE_BRAIN=<brain>`) names the brain that speaks or
+listens; without it everything belongs to `main`.
 
 ## Repo layout
 

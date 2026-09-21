@@ -1,15 +1,16 @@
 /**
  * The bridge: the whole brain contract on 127.0.0.1, behind a shared secret.
- * speak / listen / mic / status / show / health — one route table, one dispatcher.
+ * speak / listen / brains / mic / status / show / mode / health — one route table, one dispatcher.
  */
 const http = require("node:http");
 const crypto = require("node:crypto");
+const { validName } = require("./brains");
+const { WIRE, fromWire, toWire } = require("./mode");
 
 const HOST = "127.0.0.1";
 const BODY_MAX = 33_000_000; // ~32MB — inline base64 images fit, runaways don't
 const LISTEN_MS = 50_000;
 const LISTEN_MAX_MS = 55_000;
-const LISTENING_GRACE_MS = 90_000;
 const KINDS = ["html", "image", "text"];
 
 const json = (res, code, obj) =>
@@ -58,7 +59,10 @@ function readBody(req, res) {
   });
 }
 
-function startServer({ port, secret, onSpeak, onListen, onMic, onMicOpen, onStatus, onOrbiters = () => [], onShow, onTv = () => ({ mode: "auto" }), log = () => {} }) {
+/** `brain` from a query or a body: undefined when absent, null when not a name. */
+const brainOf = (v) => (v == null || v === "" ? undefined : validName(v) ? v : null);
+
+function startServer({ port, secret, onSpeak, onListen, onMic, onMicOpen, onStatus, onOrbiters = () => [], onShow, onTv = () => ({ mode: "auto" }), onBrains = () => ({ active: null, brains: [] }), onActive = () => null, onHeld = () => 0, onMode = () => "call", log = () => {} }) {
   if (!secret) throw new Error("refusing to serve without a secret — check config.json");
   const secretBuf = Buffer.from(secret);
   const authed = (req) => {
@@ -68,32 +72,40 @@ function startServer({ port, secret, onSpeak, onListen, onMic, onMicOpen, onStat
     return keyBuf.length === secretBuf.length && crypto.timingSafeEqual(keyBuf, secretBuf);
   };
 
-  let listeners = 0;
-  let lastListen = 0;
-  /** A brain has an ear here: a listen is pending, or one returned very recently. */
-  const brainListening = () => listeners > 0 || Date.now() - lastListen < LISTENING_GRACE_MS;
+  /** The active brain has an ear here: a listen is pending, or one returned very recently. */
+  const brainListening = () => {
+    const { active, brains } = onBrains();
+    return !!brains.find((b) => b.name === active)?.connected;
+  };
 
   const routes = {
     "POST /bridge/speak": async (req, res) => {
       const b = await readBody(req, res);
+      const brain = brainOf(b?.brain);
+      if (brain === null) return json(res, 400, { error: "brain must be [a-z0-9-]{1,16}" });
       await onSpeak({
         text: String(b?.text ?? ""),
         voice: b?.voice === undefined ? undefined : Number(b.voice),
         // no `to` means the source of the last thing heard, which only the body knows
         to: SOURCES.includes(b?.to) ? b.to : undefined,
+        brain,
       });
       json(res, 200, { ok: true });
     },
     "GET /bridge/listen": async (req, res, u) => {
       const raw = Number(u.searchParams.get("timeoutMs"));
       const ms = Math.min(Number.isFinite(raw) && raw > 0 ? raw : LISTEN_MS, LISTEN_MAX_MS);
-      listeners++;
-      try {
-        json(res, 200, payload(await onListen(ms)));
-      } finally {
-        listeners--;
-        lastListen = Date.now();
-      }
+      const brain = brainOf(u.searchParams.get("brain"));
+      if (brain === null) return json(res, 400, { error: "brain must be [a-z0-9-]{1,16}" });
+      const voice = u.searchParams.get("voice");
+      json(res, 200, payload(await onListen(ms, brain, voice === null ? undefined : Number(voice))));
+    },
+    "GET /bridge/brains": (req, res) => json(res, 200, { ok: true, ...onBrains() }),
+    "POST /bridge/brains/active": async (req, res) => {
+      const b = await readBody(req, res);
+      const roster = validName(b?.brain) ? await onActive(b.brain) : null;
+      if (!roster) return json(res, 400, { error: "unknown brain" });
+      json(res, 200, { ok: true, ...roster });
     },
     "POST /bridge/mic": async (req, res) => {
       const b = await readBody(req, res);
@@ -128,11 +140,33 @@ function startServer({ port, secret, onSpeak, onListen, onMic, onMicOpen, onStat
       if (!TV_MODES.includes(b?.mode)) return json(res, 400, { error: "mode must be auto, on or off" });
       json(res, 200, { ok: true, ...onTv(b.mode) });
     },
+    // the wire speaks his words, the body its own: `notes` out here is `async` inside
+    "GET /bridge/mode": (req, res) => json(res, 200, { ok: true, mode: toWire(onMode()) }),
+    "POST /bridge/mode": async (req, res) => {
+      const b = await readBody(req, res);
+      const m = fromWire(b?.mode);
+      if (!m) return json(res, 400, { error: `mode must be ${Object.keys(WIRE).join(" or ")}` });
+      // no channel is the active one; a name off the roster is never invented here
+      if (b.channel !== undefined && !onBrains().brains.some((x) => x.name === b.channel))
+        return json(res, 400, { error: "unknown brain" });
+      json(res, 200, { ok: true, mode: toWire(await onMode(m, b.channel)) });
+    },
+    // quiet was audio notes mode under another name: kept so nothing outside the repo breaks
+    "GET /bridge/quiet": (req, res) => json(res, 200, { ok: true, on: onMode() === "async" }),
+    "POST /bridge/quiet": async (req, res) => {
+      const b = await readBody(req, res);
+      if (typeof b?.on !== "boolean") return json(res, 400, { error: "on must be true or false" });
+      json(res, 200, { ok: true, on: (await onMode(b.on ? "async" : "call")) === "async" });
+    },
     "GET /bridge/health": (req, res) =>
       json(res, 200, {
         ok: true,
+        active: onBrains().active,
         brainListening: brainListening(),
         micOpen: !!onMicOpen(),
+        held: onHeld(),
+        mode: toWire(onMode()),
+        quiet: onMode() === "async",
         tv: onTv().mode,
       }),
   };
@@ -157,7 +191,6 @@ function startServer({ port, secret, onSpeak, onListen, onMic, onMicOpen, onStat
     }
   });
 
-  server.brainListening = brainListening;
   server.listen(port, HOST, () => log(`bridge on ${HOST}:${server.address().port}`));
   return server;
 }

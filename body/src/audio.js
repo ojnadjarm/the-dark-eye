@@ -97,6 +97,9 @@ function createAudio({
   let speakUntil = 0;
   let sink = null;
   let sinkAt = 0;
+  /** Every utterance id up to here was cut: its late chunks are ignored. */
+  let cutBelow = 0;
+  const captions = new Set();
 
   /** The sink for the utterance about to start, one look at the graph per `sinkTtlMs`. */
   function target() {
@@ -144,11 +147,12 @@ function createAudio({
   return {
     captureRate,
 
-    play({ seq = 0, last = false, text = "", sampleRate, samples }) {
+    play({ id, seq = 0, last = false, text = "", sampleRate, samples }) {
+      if (id !== undefined && id <= cutBelow) return;
       const buf = toBuffer(samples);
       let dropped = false;
       if (seq === 0 || !open) {
-        open = { rate: sampleRate, pending: [], bytes: 0, closed: false, proc: null, idle: null };
+        open = { id, rate: sampleRate, pending: [], bytes: 0, closed: false, proc: null, idle: null };
         queue.push(open);
       }
       const utt = open;
@@ -172,8 +176,10 @@ function createAudio({
       // the caption of a chunk is due when the chunk itself starts sounding
       if (text && !dropped) {
         const show = () => onCaption({ text, append: seq > 0, ms });
-        if (startsIn) setTimeout(show, startsIn);
-        else show();
+        if (startsIn) {
+          const t = setTimeout(() => (captions.delete(t), show()), startsIn);
+          captions.add(t);
+        } else show();
       }
       // the grace runs from the end of what is already buffered, not from now
       if (!last)
@@ -187,6 +193,24 @@ function createAudio({
     /** The voice worker died or errored mid-utterance: end the open one. */
     endOpen() {
       if (open) close(open);
+    },
+
+    /**
+     * He interrupted: kill the live playback, drop what waited behind it, and ignore
+     * every chunk still to come for ids up to `upTo` — the worker may already be on the
+     * utterance after the one playing.
+     */
+    cut(upTo = queue.at(-1)?.id ?? 0) {
+      if (!queue.length) return;
+      cutBelow = upTo;
+      for (const u of queue) clearTimeout(u.idle);
+      for (const t of captions) clearTimeout(t);
+      captions.clear();
+      queue[0].proc?.kill();
+      queue.length = 0;
+      open = null;
+      speakUntil = 0;
+      onSpeaking(0);
     },
 
     startCapture() {

@@ -8,20 +8,24 @@ const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { MAX_SAMPLES } = require("./remote-ear");
 
 const HOST = "127.0.0.1";
-const AUDIO_MAX = 3_000_000; // ~90s of 16kHz Int16 — a clip fits, a runaway does not
+const AUDIO_MAX = MAX_SAMPLES * 2; // the ear's own cap in bytes — a clip fits, a runaway does not
 const COOKIE_MAX_AGE = 2_592_000; // 30 days, owner's call
 const LOGIN_TRIES = 5;
 const LOGIN_WINDOW_MS = 300_000;
+const MODES = ["call", "notes"]; // his words, the only ones the page may send
+const REPLAY_GAP_MS = 1000; // a held ▶ must not queue twenty utterances, per device
 const STATE_HOME = process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state");
 const SESSIONS_FILE = path.join(STATE_HOME, "dark-eye", "remote-sessions.json");
 const WWW = path.join(__dirname, "remote-www");
 const PUBLIC = { "/": "index.html", "/worklet.js": "worklet.js" };
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8" };
 
+/** Never a stale lane: an intermediary that cached one poll or cursor answer is a dead life's cursor. */
 const json = (res, code, obj) =>
-  res.writeHead(code, { "Content-Type": "application/json" }).end(JSON.stringify(obj));
+  res.writeHead(code, { "Content-Type": "application/json", "Cache-Control": "no-store" }).end(JSON.stringify(obj));
 
 /** Reads a request body as one Buffer, answering 413 itself if it runs over the cap. */
 function readBody(req, res, cap) {
@@ -97,6 +101,10 @@ function startRemote({
   onPoll = () => null,
   onCursor = () => 0,
   onAck = () => {},
+  onReplay = () => false,
+  onBrains = () => null,
+  onActive = () => null,
+  onMode = () => null,
   wav = () => null,
   sessionsFile = SESSIONS_FILE,
   log = () => {},
@@ -105,6 +113,8 @@ function startRemote({
   const secretBuf = Buffer.from(secret);
   const sessions = loadSessions(sessionsFile, log); // token digest → expiry, so a restart keeps him in
   const attempts = new Map(); // remote address → recent login timestamps
+  const replayAt = new Map(); // session digest → its last replay, so one device never gags the other
+  const boot = crypto.randomBytes(6).toString("base64url"); // this life of the body: a page still holding the last one's seqs must know
 
   const keyOk = (key) => {
     if (typeof key !== "string") return false;
@@ -124,13 +134,21 @@ function startRemote({
   /** Drops what the cookie's own Max-Age has already ended. */
   const sweep = () => {
     const now = Date.now();
-    for (const [d, exp] of sessions) if (exp <= now) sessions.delete(d);
+    for (const [d, exp] of sessions)
+      if (exp <= now) {
+        sessions.delete(d);
+        replayAt.delete(d);
+      }
   };
 
-  const authed = (req) => {
+  /** The session behind a live cookie, as its digest, else null — the device a limit is counted against. */
+  const sessionOf = (req) => {
     const token = /(?:^|;\s*)de=([^;]+)/.exec(req.headers.cookie ?? "")?.[1];
-    return !!token && (sessions.get(digest(token)) ?? 0) > Date.now();
+    const d = token && digest(token);
+    return d && (sessions.get(d) ?? 0) > Date.now() ? d : null;
   };
+
+  const authed = (req) => !!sessionOf(req);
 
   const routes = {
     "POST /remote/login": async (req, res) => {
@@ -178,19 +196,71 @@ function startRemote({
       const raw = await readBody(req, res, 4096);
       const seq = Number(u.searchParams.get("seq") ?? parseSeq(raw));
       if (!Number.isInteger(seq) || seq <= 0) return void json(res, 400, { error: "seq" });
+      // a tray item kept across a restart acks the seq of a life that is gone: that number
+      // names someone else's reply here, and marking it played would take it off the ring
+      const from = parseBoot(raw);
+      if (from && from !== boot) return void res.writeHead(204).end();
       await onAck(seq);
       res.writeHead(204).end();
     },
-    /** Where a page that has just loaded should start polling from. */
-    "GET /remote/cursor": async (req, res) => json(res, 200, { seq: Number(await onCursor()) || 0 }),
+    /**
+     * "Say that one again" — the reply itself comes back on the poll lane, so this
+     * answers only whether the body still has those words.
+     */
+    "POST /remote/replay": async (req, res) => {
+      const seq = parseSeq(await readBody(req, res, 4096));
+      if (!Number.isInteger(seq) || seq <= 0) return void json(res, 400, { error: "seq" });
+      const who = sessionOf(req);
+      const now = Date.now();
+      if (now - (replayAt.get(who) ?? 0) < REPLAY_GAP_MS) return void json(res, 429, { error: "too fast" });
+      if (!(await onReplay(seq))) return void json(res, 400, { error: "unknown seq" });
+      replayAt.set(who, now); // only a press that was given words starts the gap
+      json(res, 200, { ok: true });
+    },
+    /** The chips: who is there and who hears him. */
+    "GET /remote/brains": async (req, res) => json(res, 200, await onBrains()),
+    /** One tap on a chip; the answer is the roster as it stands now, or 400 for a name nobody has. */
+    "POST /remote/active": async (req, res) => {
+      const brain = parseBrain(await readBody(req, res, 4096));
+      const roster = typeof brain === "string" ? await onActive(brain) : null;
+      if (!roster) return void json(res, 400, { error: "unknown brain" });
+      json(res, 200, roster);
+    },
+    /** Which mode the exchange is in, in his words — `call` or `notes`, never the body's. */
+    "GET /remote/mode": async (req, res) => json(res, 200, { mode: await onMode() }),
+    /**
+     * One tap on the mode icon. Only his two words are a mode here: the body's own
+     * `async` is 400, so the render socket's word can never come back through the
+     * page. `channel` is optional and names the row it moves — it is checked against
+     * the roster, so the page can never move a mode on a name nobody has; without it
+     * the body moves the active channel, as it always did.
+     */
+    "POST /remote/mode": async (req, res) => {
+      const raw = await readBody(req, res, 4096);
+      const want = parseMode(raw);
+      if (!MODES.includes(want)) return void json(res, 400, { error: "unknown mode" });
+      const channel = parseChannel(raw);
+      if (channel !== undefined && !(await onRoster(channel))) return void json(res, 400, { error: "unknown brain" });
+      const mode = await onMode(want, channel);
+      json(res, 200, channel === undefined ? { mode } : { mode, channel });
+    },
+    /**
+     * Where a page that has just loaded should start polling from — and which life of the
+     * body those seqs belong to: a restart counts the ring from 0 again, so a page still
+     * holding the last life's numbers would press ▶ on replies that no longer exist.
+     */
+    "GET /remote/cursor": async (req, res) => json(res, 200, { seq: Number(await onCursor()) || 0, boot }),
     /**
      * No `since` at all means "from now": the head, so a reloaded page waits for
      * the next reply instead of replaying the ring. `since=<n>` resumes where it says.
+     * Every answer carries this life, because a restart between two polls takes an idle
+     * socket and nothing else: without it the page polls on with a dead life's cursor.
      */
     "GET /remote/poll": async (req, res, u) => {
       const raw = u.searchParams.get("since");
       const n = Number(raw);
       const since = raw === null ? Number(await onCursor()) || 0 : Number.isFinite(n) && n > 0 ? n : 0;
+      res.setHeader("X-Eye-Boot", boot);
       json(res, 200, (await onPoll(since)) ?? null);
     },
   };
@@ -203,9 +273,49 @@ function startRemote({
     }
   };
 
+  const parseBoot = (raw) => {
+    try {
+      return JSON.parse(raw.toString()).boot;
+    } catch {
+      return null;
+    }
+  };
+
   const parseKey = (raw) => {
     try {
       return JSON.parse(raw.toString()).key;
+    } catch {
+      return null;
+    }
+  };
+
+  /** True only for a name the body itself lists — the page's channel is never taken on trust. */
+  const onRoster = async (name) => {
+    if (typeof name !== "string") return false;
+    const r = await onBrains();
+    return Array.isArray(r?.brains) && r.brains.some((b) => b?.name === name);
+  };
+
+  const parseMode = (raw) => {
+    try {
+      return JSON.parse(raw.toString()).mode;
+    } catch {
+      return null;
+    }
+  };
+
+  /** `undefined` when the page sent no channel at all, which means "the active one". */
+  const parseChannel = (raw) => {
+    try {
+      return JSON.parse(raw.toString()).channel;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const parseBrain = (raw) => {
+    try {
+      return JSON.parse(raw.toString()).brain;
     } catch {
       return null;
     }
@@ -271,4 +381,4 @@ function startRemote({
   return server;
 }
 
-module.exports = { startRemote };
+module.exports = { startRemote, AUDIO_MAX };
